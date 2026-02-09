@@ -1,0 +1,75 @@
+Thu 01 Jan 2026 10:57:50 INFO  {'seed': 2020, 'dataset': 'Musical_Instruments', 'bidirectional': False, 'n_heads': 4, 'lr': 0.001, 'tau': 0.07, 'cl_weight': 0.4, 'mlm_weight': 0.6, 'neg_num': 24000, 'text_types': ['title', 'brand', 'features', 'categories', 'description'], 'epochs': 500, 'batch_size': 100, 'num_workers': 8, 'eval_step': 1, 'learner': 'AdamW', 'data_path': './dataset', 'map_path': '.emb_map.json', 'text_index_path': '.code.pq.20_256.pca128.title_brand_features_categories_description.json', 'text_emb_path': '.t5.meta.emb.npy', 'lr_scheduler_type': 'constant', 'gradient_accumulation_steps': 1, 'warmup_steps': 500, 'weight_decay': 0.0001, 'max_his_len': 50, 'n_codes_per_lel': 256, 'code_level': 20, 'early_stop': 100, 'embedding_size': 128, 'hidden_size': 512, 'n_layers': 2, 'n_layers_cross': 2, 'dropout_prob': 0.3, 'dropout_prob_cross': 0.3, 'mask_ratio': 0.5, 'device': 'cuda:0', 'metrics': 'recall@5,ndcg@5,recall@10,ndcg@10', 'valid_metric': 'ndcg@10', 'log_dir': './logs/LSTM分层', 'ckpt_dir': './myckpt/', 'resume': None, 'run_local_time': 'Jan-01-2026_10-57', 'save_file_name': 'Jan-01-2026_10-57-57e1a5_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3'}
+Thu 01 Jan 2026 10:58:20 INFO  CCFRec(
+  (query_code_embedding): Embedding(5121, 128, padding_idx=0)
+  (item_text_embedding): ModuleList(
+    (0-4): 5 x Embedding(24588, 128, padding_idx=0)
+  )
+  (qformer): CrossAttTransformer(
+    (layer): ModuleList(
+      (0-1): 2 x CrossAttTransformerLayer(
+        (self_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (cross_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.3, inplace=False)
+        )
+      )
+    )
+  )
+  (intra_position_embedding): Embedding(50, 128)
+  (intra_transformer): Transformer(
+    (layer): ModuleList(
+      (0-1): 2 x TransformerLayer(
+        (multi_head_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.3, inplace=False)
+        )
+      )
+    )
+  )
+  (intra_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (intra_dropout): Dropout(p=0.3, inplace=False)
+  (inter_lstm): LSTM(128, 64, batch_first=True, bidirectional=True)
+  (inter_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (inter_dropout): Dropout(p=0.3, inplace=False)
+  (session_position_embedding): Embedding(50, 128)
+  (session_attention_w): Linear(in_features=256, out_features=128, bias=True)
+  (session_attention_v): Linear(in_features=128, out_features=1, bias=False)
+  (residual_gate): Sequential(
+    (0): Linear(in_features=256, out_features=128, bias=True)
+    (1): Sigmoid()
+  )
+  (loss_fct): CrossEntropyLoss()
+)

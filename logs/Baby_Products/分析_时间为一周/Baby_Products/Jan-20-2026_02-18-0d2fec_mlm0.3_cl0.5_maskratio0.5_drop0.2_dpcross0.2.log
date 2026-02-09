@@ -1,0 +1,128 @@
+Tue 20 Jan 2026 02:18:29 INFO  {'seed': 2020, 'dataset': 'Baby_Products', 'bidirectional': False, 'n_heads': 2, 'lr': 0.0005, 'tau': 0.07, 'cl_weight': 0.5, 'mlm_weight': 0.3, 'neg_num': 25000, 'text_types': ['title', 'brand', 'features', 'categories', 'description'], 'epochs': 500, 'batch_size': 100, 'num_workers': 8, 'eval_step': 1, 'learner': 'AdamW', 'data_path': './dataset', 'map_path': '.emb_map.json', 'text_index_path': '.code.pq.20_256.pca128.title_brand_features_categories_description.json', 'text_emb_path': '.t5.meta.emb.npy', 'lr_scheduler_type': 'constant', 'gradient_accumulation_steps': 1, 'warmup_steps': 500, 'weight_decay': 0.0001, 'max_his_len': 50, 'n_codes_per_lel': 256, 'code_level': 20, 'early_stop': 100, 'embedding_size': 128, 'hidden_size': 512, 'n_layers': 2, 'n_layers_cross': 2, 'dropout_prob': 0.2, 'dropout_prob_cross': 0.2, 'mask_ratio': 0.5, 'device': 'cuda:0', 'metrics': 'recall@5,ndcg@5,recall@10,ndcg@10', 'valid_metric': 'ndcg@10', 'log_dir': './logs/Baby_Products/分析_时间为一周', 'ckpt_dir': './myckpt/', 'resume': None, 'run_local_time': 'Jan-20-2026_02-18', 'save_file_name': 'Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2'}
+Tue 20 Jan 2026 02:19:37 INFO  MGFSRec(
+  (query_code_embedding): Embedding(5121, 128, padding_idx=0)
+  (item_text_embedding): ModuleList(
+    (0-4): 5 x Embedding(36014, 128, padding_idx=0)
+  )
+  (qformer): CrossAttTransformer(
+    (layer): ModuleList(
+      (0-1): 2 x CrossAttTransformerLayer(
+        (self_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.2, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.2, inplace=False)
+        )
+        (cross_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.2, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.2, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.2, inplace=False)
+        )
+      )
+    )
+  )
+  (fourier_attention): FrequencyAttention(
+    (freq_proj): Linear(in_features=128, out_features=128, bias=True)
+    (dropout): Dropout(p=0.1, inplace=False)
+    (layer_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (intra_position_embedding): Embedding(50, 128)
+  (intra_transformer): Transformer(
+    (layer): ModuleList(
+      (0-1): 2 x TransformerLayer(
+        (multi_head_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.2, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.2, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.2, inplace=False)
+        )
+      )
+    )
+  )
+  (intra_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (intra_dropout): Dropout(p=0.2, inplace=False)
+  (inter_lstm): LSTM(128, 64, batch_first=True, bidirectional=True)
+  (inter_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (inter_dropout): Dropout(p=0.2, inplace=False)
+  (session_position_embedding): Embedding(50, 128)
+  (session_attention_w): Linear(in_features=256, out_features=128, bias=True)
+  (session_attention_v): Linear(in_features=128, out_features=1, bias=False)
+  (residual_gate): Sequential(
+    (0): Linear(in_features=256, out_features=128, bias=True)
+    (1): Sigmoid()
+  )
+  (loss_fct): CrossEntropyLoss()
+)
+Tue 20 Jan 2026 03:38:49 INFO  [Epoch 0] training [time: 4752.87s, loss: 10.7241, mlm_loss: 5.5580, rec_loss: 8.9424, cl_loss: 0.2288, ]
+Tue 20 Jan 2026 03:43:30 INFO  [Epoch 0] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 03:43:30 INFO  [Epoch 0] Val Result: {'recall@5': 0.02321308952957016, 'ndcg@5': 0.015009899178287633, 'recall@10': 0.03791692366872931, 'ndcg@10': 0.019722036941691723}
+Tue 20 Jan 2026 05:03:14 INFO  [Epoch 1] training [time: 4784.13s, loss: 10.0106, mlm_loss: 4.7317, rec_loss: 8.5406, cl_loss: 0.1010, ]
+Tue 20 Jan 2026 05:07:54 INFO  [Epoch 1] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 05:07:54 INFO  [Epoch 1] Val Result: {'recall@5': 0.025182885983936542, 'ndcg@5': 0.01610329918629038, 'recall@10': 0.04124634393839909, 'ndcg@10': 0.021251156550900846}
+Tue 20 Jan 2026 06:27:47 INFO  [Epoch 2] training [time: 4792.33s, loss: 9.8509, mlm_loss: 4.5956, rec_loss: 8.4268, cl_loss: 0.0908, ]
+Tue 20 Jan 2026 06:32:27 INFO  [Epoch 2] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 06:32:27 INFO  [Epoch 2] Val Result: {'recall@5': 0.026131306499001836, 'ndcg@5': 0.016554829902576885, 'recall@10': 0.04256617388593751, 'ndcg@10': 0.021835790871364183}
+Tue 20 Jan 2026 07:52:17 INFO  [Epoch 3] training [time: 4790.05s, loss: 9.7528, mlm_loss: 4.5124, rec_loss: 8.3562, cl_loss: 0.0857, ]
+Tue 20 Jan 2026 07:56:59 INFO  [Epoch 3] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 07:56:59 INFO  [Epoch 3] Val Result: {'recall@5': 0.027172579372185413, 'ndcg@5': 0.01734986509247833, 'recall@10': 0.04481452741465874, 'ndcg@10': 0.023018672943433068}
+Tue 20 Jan 2026 09:16:46 INFO  [Epoch 4] training [time: 4786.70s, loss: 9.6838, mlm_loss: 4.4554, rec_loss: 8.3050, cl_loss: 0.0842, ]
+Tue 20 Jan 2026 09:21:26 INFO  [Epoch 4] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 09:21:26 INFO  [Epoch 4] Val Result: {'recall@5': 0.028757701771490347, 'ndcg@5': 0.018303223267314525, 'recall@10': 0.04598181420243141, 'ndcg@10': 0.023826206948685272}
+Tue 20 Jan 2026 10:41:07 INFO  [Epoch 5] training [time: 4780.59s, loss: 9.6318, mlm_loss: 4.4144, rec_loss: 8.2663, cl_loss: 0.0823, ]
+Tue 20 Jan 2026 10:45:48 INFO  [Epoch 5] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 10:45:48 INFO  [Epoch 5] Val Result: {'recall@5': 0.02879086332796116, 'ndcg@5': 0.01836069089066389, 'recall@10': 0.04622720972031543, 'ndcg@10': 0.023962129943443256}
+Tue 20 Jan 2026 12:05:24 INFO  [Epoch 6] training [time: 4776.27s, loss: 9.5907, mlm_loss: 4.3841, rec_loss: 8.2349, cl_loss: 0.0813, ]
+Tue 20 Jan 2026 12:10:05 INFO  [Epoch 6] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 12:10:05 INFO  [Epoch 6] Val Result: {'recall@5': 0.028843921818314463, 'ndcg@5': 0.01830397346784967, 'recall@10': 0.046777691557730955, 'ndcg@10': 0.02407640936056403}
+Tue 20 Jan 2026 13:29:48 INFO  [Epoch 7] training [time: 4783.28s, loss: 9.5563, mlm_loss: 4.3594, rec_loss: 8.2085, cl_loss: 0.0801, ]
+Tue 20 Jan 2026 13:34:31 INFO  [Epoch 7] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 13:34:31 INFO  [Epoch 7] Val Result: {'recall@5': 0.029029626534551024, 'ndcg@5': 0.01864587107294809, 'recall@10': 0.04706288094337996, 'ndcg@10': 0.024429945674766057}
+Tue 20 Jan 2026 14:54:09 INFO  [Epoch 8] training [time: 4778.21s, loss: 9.5276, mlm_loss: 4.3402, rec_loss: 8.1858, cl_loss: 0.0795, ]
+Tue 20 Jan 2026 14:58:52 INFO  [Epoch 8] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 14:58:52 INFO  [Epoch 8] Val Result: {'recall@5': 0.029281654363729218, 'ndcg@5': 0.018784970785715293, 'recall@10': 0.04726848259349901, 'ndcg@10': 0.024569149442362534}
+Tue 20 Jan 2026 16:18:37 INFO  [Epoch 9] training [time: 4784.94s, loss: 9.5029, mlm_loss: 4.3237, rec_loss: 8.1664, cl_loss: 0.0789, ]
+Tue 20 Jan 2026 16:23:16 INFO  [Epoch 9] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 16:23:16 INFO  [Epoch 9] Val Result: {'recall@5': 0.030203545633617858, 'ndcg@5': 0.019320108433634475, 'recall@10': 0.04828322622150593, 'ndcg@10': 0.025129792685367268}
+Tue 20 Jan 2026 17:43:03 INFO  [Epoch 10] training [time: 4786.17s, loss: 9.4817, mlm_loss: 4.3089, rec_loss: 8.1498, cl_loss: 0.0785, ]
+Tue 20 Jan 2026 17:47:43 INFO  [Epoch 10] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 17:47:43 INFO  [Epoch 10] Val Result: {'recall@5': 0.030422411906325237, 'ndcg@5': 0.01953229111339774, 'recall@10': 0.04846229862644833, 'ndcg@10': 0.02532675036693684}
+Tue 20 Jan 2026 19:07:34 INFO  [Epoch 11] training [time: 4790.60s, loss: 9.4627, mlm_loss: 4.2976, rec_loss: 8.1341, cl_loss: 0.0787, ]
+Tue 20 Jan 2026 19:12:14 INFO  [Epoch 11] Val Result: {'recall@5': 0.030694336669385914, 'ndcg@5': 0.01951313275201148, 'recall@10': 0.048555150984566614, 'ndcg@10': 0.02523163889624527}
+Tue 20 Jan 2026 20:32:10 INFO  [Epoch 12] training [time: 4796.14s, loss: 9.4454, mlm_loss: 4.2865, rec_loss: 8.1205, cl_loss: 0.0779, ]
+Tue 20 Jan 2026 20:36:50 INFO  [Epoch 12] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 20:36:50 INFO  [Epoch 12] Val Result: {'recall@5': 0.03068770435809175, 'ndcg@5': 0.01968189959997216, 'recall@10': 0.04878064956856815, 'ndcg@10': 0.025490152154478328}
+Tue 20 Jan 2026 21:56:34 INFO  [Epoch 13] training [time: 4784.10s, loss: 9.4311, mlm_loss: 4.2761, rec_loss: 8.1094, cl_loss: 0.0778, ]
+Tue 20 Jan 2026 22:01:14 INFO  [Epoch 13] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Tue 20 Jan 2026 22:01:14 INFO  [Epoch 13] Val Result: {'recall@5': 0.03075402747103338, 'ndcg@5': 0.019837582105310298, 'recall@10': 0.049079103576805484, 'ndcg@10': 0.025722714862155115}
+Tue 20 Jan 2026 23:20:57 INFO  [Epoch 14] training [time: 4783.67s, loss: 9.4163, mlm_loss: 4.2680, rec_loss: 8.0971, cl_loss: 0.0777, ]
+Tue 20 Jan 2026 23:25:37 INFO  [Epoch 14] Val Result: {'recall@5': 0.030402514972442746, 'ndcg@5': 0.019516940725535416, 'recall@10': 0.049092368199393804, 'ndcg@10': 0.0255350223136016}
+Wed 21 Jan 2026 00:45:28 INFO  [Epoch 15] training [time: 4790.76s, loss: 9.4027, mlm_loss: 4.2600, rec_loss: 8.0861, cl_loss: 0.0771, ]
+Wed 21 Jan 2026 00:50:06 INFO  [Epoch 15] Val Result: {'recall@5': 0.030415779595031073, 'ndcg@5': 0.01954367865259133, 'recall@10': 0.04901278046386385, 'ndcg@10': 0.025523689806030835}
+Wed 21 Jan 2026 02:09:45 INFO  [Epoch 16] training [time: 4778.25s, loss: 9.3902, mlm_loss: 4.2520, rec_loss: 8.0761, cl_loss: 0.0771, ]
+Wed 21 Jan 2026 02:14:26 INFO  [Epoch 16] Saving current: ./myckpt/Baby_Products/Jan-20-2026_02-18-0d2fec_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.2/best_model.pth
+Wed 21 Jan 2026 02:14:26 INFO  [Epoch 16] Val Result: {'recall@5': 0.031085643035741524, 'ndcg@5': 0.019916227394897724, 'recall@10': 0.04996120097892915, 'ndcg@10': 0.025971040736768966}

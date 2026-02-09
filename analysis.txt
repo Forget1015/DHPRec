@@ -1,0 +1,1645 @@
+1、preprocess.py
+    （1）clean_text(raw_text)：文本清洗函数
+        emoji库：处理文本中的表情符号
+        html库：处理 HTML 转义字符（如&amp;转&）
+        作用：对输入文本进行标准化处理，去除无关字符，统一格式。处理逻辑：
+        若输入是列表：遍历每个元素，分别清洗后拼接成字符串
+        若输入是字典：转为字符串后去除首尾的{}
+        其他类型（如字符串）：直接处理
+        清洗步骤：
+        html.unescape：解析 HTML 转义字符（如&lt;转<）
+        正则去除 HTML 标签（如<div>、</p>）
+        去除引号和换行符
+        处理句尾的.：确保文本以一个.结尾（若原句尾有多个.，只保留一个；若没有则添加）
+        去除表情符号（emoji.replace_emoji）
+    （2）transform_to_jsonl(df, filepath, hislen=20)：转换数据为 JSONL 格式
+        把train/valid/test.csv的用户-物品交互数据转换为JSONL格式（可以看一下具体csv文件好理解，用户-物品交互+此前的交互）
+        作用：将 CSV 中的用户 - 物品交互数据转换为 JSONL（每行一个 JSON 对象）格式，提取用户 ID、目标物品 ID 和交互历史。处理逻辑：
+        遍历 DataFrame 的每一行，解析用户 ID、目标物品 ID（parent_asin）和历史交互（history，以空格分隔的物品 ID 列表）
+        截取最近的hislen个历史交互（默认 20 个）
+        每行数据格式：{"user_id": "...", "target_id": "...", "inter_history": [...]}
+        收集所有用户 ID 和物品 ID，返回集合（去重）
+    （3）load_meta_items(file, item2id)：加载物品元数据
+        作用：从压缩的 JSONL 文件中读取物品的元数据（标题、描述、品牌等），并关联到物品 ID。处理逻辑：
+        读取 gzip 压缩的元数据文件（meta_{dataset}.jsonl.gz）
+        提取每个物品的parent_asin（物品标识），仅保留在item2id中的物品（过滤无效物品）
+        清洗元数据中的文本字段（标题、描述、品牌、特征、类别）
+        合并所有文本字段为meta字段，便于后续特征提取
+        按物品 ID 排序后返回
+    （4）主程序逻辑（if __name__ == '__main__':）
+        解析命令行参数：
+        --dataset：指定数据集名称（默认Musical_Instruments）
+        --his_len：交互历史的最大长度（默认 20）
+        读取原始数据：
+            读取训练集、验证集、测试集的 CSV 压缩文件（{dataset}.train.csv.gz等）
+            train_csv[~train_csv["history"].isna()]等过滤掉history为空的行（无交互历史的数据）
+        生成 JSONL 文件：
+            调用transform_to_jsonl，分别生成训练 / 验证 / 测试集的 JSONL 文件
+            汇总所有用户 ID 和物品 ID，计算数据集基本信息（用户数、物品数、交互数、稀疏度）
+        保存映射关系：
+            保存用户列表、物品列表到 JSON 文件
+            生成物品到 ID 的映射（item2id），保存为emb_map.json（用于后续嵌入层映射）
+        处理元数据：
+            调用load_meta_items读取物品元数据，清洗后保存为{dataset}.meta.json
+    （5）输出文件说明
+        处理完成后，在./dataset/{dataset}/目录下生成以下文件：
+        {dataset}.train.jsonl/valid.jsonl/test.jsonl：用户 - 物品交互数据
+        {dataset}.user.json：所有用户 ID 列表
+        {dataset}.item.json：所有物品 ID 列表
+        {dataset}.emb_map.json：物品到 ID 的映射
+        {dataset}.meta.json：物品的元数据（标题、描述等）
+    （6）. 核心功能总结
+        数据清洗：标准化文本格式，去除噪声（HTML 标签、表情符号等）
+        数据转换：将 CSV 格式转换为适合序列模型的 JSONL 格式
+        元数据处理：提取并关联物品的属性信息，为后续特征工程做准备
+        数据集统计：计算用户数、物品数、稀疏度等基本指标，帮助了解数据分布
+    （7）问题1:物品本身已有唯一标识（如parent_asin这类原始 ID），为什么仍需要item2id
+        原始物品标识（如parent_asin）通常是字符串（如B0000AXY6G）或非连续的整数。在模型训练中，物品 ID 常被用作嵌入层（Embedding Layer）的输入，而嵌入层的底层实现依赖于整数索引（通过索引快速查找对应的嵌入向量）。
+        如果直接使用原始字符串 ID，需要先进行哈希映射，可能导致哈希冲突，且内存占用更大。
+        如果原始 ID 是非连续整数（如存在断层，如 1、100、1000），会导致嵌入矩阵的维度被迫与最大 ID 一致，造成大量内存浪费（例如，最大 ID 为 10000 但实际物品只有 1000 个，会浪费 90% 的空间）。
+        通过item2id映射为连续整数 ID（如 1,2,...,N，N 为物品总数），嵌入矩阵的维度可精确为N+1（通常从 1 开始索引），极大减少内存占用和计算开销。
+2、encode_emb.py
+    这段代码的核心功能是利用预训练的文本编码器（Sentence-T5）为数据集中物品的元数据（如标题、描述等文本信息）生成向量嵌入（Embedding），并将生成的嵌入保存为 numpy 数组文件，方便后续模型使用。下面是详细分析：
+    (1) parse_arguments()：解析命令行参数
+        作用：定义并解析程序运行时的参数，方便灵活配置。参数说明：
+        --dataset：指定数据集名称（默认Musical_Instruments）
+        --gpu_id：指定使用的 GPU 编号（默认 1，若为 - 1 则使用 CPU）
+        --data_path：数据集根目录（默认./dataset）
+        --text_types：需要生成嵌入的文本类型（如title、description等，默认只处理title）
+    (2)主程序逻辑（if __name__ == "__main__":） 
+        初始化参数与路径
+            解析命令行参数，获取数据集名称、GPU 编号、数据路径等配置。
+            拼接数据集的完整路径（dataset_path），例如./dataset/Musical_Instruments。
+        设备配置
+            device_map：指定模型加载到的 GPU（空字符串""表示默认使用该 GPU）。
+            device：创建 PyTorch 设备对象，用于将模型移动到指定 GPU（若gpu_id无效，会自动 fallback 到 CPU）。
+        加载物品元数据
+            通过json.load读取之前生成的物品元数据文件（{dataset}.meta.json），该文件包含每个物品的文本属性（如title、description等）。
+            meta_text_dict是一个字典，键为物品的整数 ID（如1、2...），值为该物品的元数据字典（包含title、brand等字段）。
+        验证文本类型有效性
+            attr_list为需要处理的文本类型（如["title", "description"]）。
+            遍历attr_list，检查每个文本类型是否存在于元数据中（以第一个物品的元数据为参照），若不存在则抛出错误，避免后续处理失败。
+        生成文本嵌入
+            排序文本列表：sorted(meta_text_dict.items(), key=lambda x: int(x[0]))对meta_text_dict的键（物品 ID）按整数排序，确保物品顺序与item2id映射一致，然后提取对应文本类型的内容，形成sorted_text列表（例如所有物品的标题按 ID 升序排列）。
+            加载预训练模型：使用SentenceTransformer('sentence-t5-base')加载预训练的文本编码器（sentence-t5-base是一个基于 T5 的模型，擅长将文本转换为语义向量），并将模型移动到指定 GPU。
+            生成嵌入向量：调用text_embedding_model.encode对sorted_text中的文本批量编码：
+                convert_to_numpy=True：将输出转换为 numpy 数组（方便后续保存）。
+                batch_size=256：批量处理文本，提高效率。
+                show_progress_bar=True：显示编码进度条。
+            生成的embs是一个二维数组，形状为(物品数量, 嵌入维度)（sentence-t5-base的输出维度为 768）。
+        保存嵌入向量
+            使用np.save将生成的嵌入向量保存为.npy文件，路径为{dataset_path}/{dataset}.t5.{attr}.emb.npy（例如Musical_Instruments.t5.title.emb.npy）。
+            保存后打印提示信息，确认文件已生成。
+    （3）输出文件说明
+            处理完成后，在数据集目录下生成以{dataset}.t5.{文本类型}.emb.npy命名的文件，例如：
+            若text_types为title，则生成Musical_Instruments.t5.title.emb.npy，包含所有物品标题的语义嵌入。
+            若text_types为["title", "description"]，则会生成两个文件，分别对应标题和描述的嵌入。
+    （4）核心功能总结
+        利用预训练的文本编码器（Sentence-T5）将物品的文本元数据转换为固定维度的语义向量。
+        确保嵌入向量的顺序与物品 ID（item2id映射的整数 ID）一致，便于后续模型通过物品 ID 直接索引对应的文本嵌入。
+        生成的嵌入向量可用于推荐系统中，例如作为物品特征输入模型，提升模型对物品语义的理解（如基于标题相似性的推荐）。
+        这段代码是数据预处理的延伸，为后续模型训练提供了高质量的文本特征嵌入。
+3、generate_faiss_multi_emb.py（可创新！！！！！！！！！）
+    这段代码的核心功能是 使用 FAISS 库对多类型文本嵌入（Embedding）执行量化压缩，将高维连续向量转化为离散的 “语义 ID” 并保存。支持两种经典量化算法（PQ 乘积量化 / RQ 残差量化），适配多类型文本（如标题、描述），还可通过 PCA 可选降维优化高维数据处理。
+     faiss：核心：Facebook量化/检索库，实现PQ/RQ
+    （1）parse_arguments()：解析命令行参数
+        作用：定义程序运行的关键参数，灵活切换量化方式和配置文件。
+        --config：指定配置文件路径（默认Musical_Instruments.yaml），包含量化参数（如码本数量、聚类数等）
+        --type：指定量化方式（可选pq/rq/rq-kmeans，默认pq）
+    （3） 主程序逻辑（main(config)）
+        第一步：初始化参数与路径
+            从配置文件中读取核心参数：数据集名称、数据路径、文本类型（如title）、码本数量（n_codebooks）、编码位数（code_num）、PCA 降维维度（pca_size）等。
+            拼接语义 ID 的保存路径（文件名包含量化方式、参数、文本类型，便于区分）。
+            code_num是每个码本的聚类中心数（必须是2的整数次幂）
+        关键参数说明：
+            code_num	            每个码本的聚类中心数（2 的整数次幂）	16/32/64
+            n_codebooks	            码本数量（PQ 的子空间数 / RQ 的层数）	8/16
+            pca_size	            PCA 降维后的维度（0 表示不降维）	    256/0
+            data_path	            嵌入文件根路径	                       ./data/emb/
+            semantic_ids_path	    语义 ID 保存根路径	                   ./data/sem/
+            faiss_omp_num_threads	FAISS 并行线程数	                   8
+        第二步：加载多类型文本嵌入 + 可选 PCA 降维
+            加载每种文本类型的嵌入文件（.npy 格式），并对每种嵌入单独执行 PCA 降维（若配置开启）。    
+            若配置了PCA降维（pca_size>0），对当前文本嵌入单独降维+白化
+            pca = PCA(n_components=config['pca_size'], whiten=True)：n_components=降维后维度，whiten=True（白化，去除特征相关性，优化量化效果）
+            sent_emb = pca.fit_transform(sent_emb)  # 拟合并降维（shape变为[样本数, pca_size]）
+            sent_emb = np.ascontiguousarray(sent_emb)  # 转换为连续内存数组（FAISS要求，避免报错）
+            sent_embs.append(sent_emb)  # 加入列表：最终sent_embs shape为[文本类型数, 样本数, 维度]
+        第三步：FAISS 并行配置（加速训练 / 编码）
+        第四步：量化核心逻辑（PQ vs RQ）
+            PQ 的核心是 “分而治之”：将高维向量拆分为多个低维子空间，每个子空间独立量化。
+                sent_embs = np.concatenate(sent_embs, axis=1)：合并多类型文本嵌入：在特征维度上拼接（关键！PQ要求输入是单向量）。例：title嵌入(10000, 256) + description嵌入(10000, 256) → 合并为(10000, 512)
+                初始化PQ索引（FAISS核心API：
+                index = faiss.IndexPQ(
+                    sent_embs.shape[-1],  # 输入向量的总维度（合并后的维度，如512）
+                    config['n_codebooks'],  # 码本数量（即子空间数，如8 → 512维拆分为8个64维子空间）
+                    n_bits,  # 每个码本的比特数（对应code_num=2^n_bits，如4 → 每个码本16个聚类中心）
+                    faiss.METRIC_INNER_PRODUCT  # 距离度量：内积（适合语义嵌入的相似度计算）
+                )
+                index.train(sent_embs)：训练PQ模型：用所有嵌入数据学习码本（本质是对每个子空间做K-means聚类），必须训练：生成每个子空间的聚类中心（码本）
+                index.add(sent_embs)  # 可选：将嵌入添加到索引（此处主要为了后续编码方便
+                faiss_sem_ids = []  生成PQ编码（核心：将连续向量转化为离散ID）存储所有样本的语义ID
+                uint8_code = index.pq.compute_codes(sent_embs)  # 生成二进制编码（uint8类型，shape=[样本数, 总字节数]）
+                n_bytes = uint8_code.shape[1]  # 每个样本的编码字节数（例：8个码本×4比特=32比特=4字节）
+                for u8_code in uint8_code:  # 遍历每个样本的二进制编码
+                    # 用FAISS的BitstringReader解析二进制编码
+                    bs = faiss.BitstringReader(faiss.swig_ptr(u8_code), n_bytes)
+                    code = []
+                    # 每个码本对应一个ID：从二进制编码中读取n_bits比特，转为整数ID
+                    for i in range(config['n_codebooks']):
+                        code.append(bs.read(n_bits))  # 例：8个码本 → 每个样本生成8个整数ID（如[3,5,12,...]）
+                    faiss_sem_ids.append(code)  # 每个样本的语义ID是一个列表（长度=码本数量）
+                faiss_sem_ids = np.array(faiss_sem_ids)  # shape=[样本数, 码本数量]
+                item2sem_ids = [[]] + faiss_sem_ids.tolist()  整理语义ID格式：第0位为空列表（适配下游任务的索引从1开始）,最终格式：[ [], [id1,id2...], [id1,id2...]... ]
+            RQ 的核心是 “分层修正”：不拆分向量，而是通过多层量化器逐步修正前序量化的误差（残差），精度通常优于 PQ。
+                sem_ids_list = []  # 存储每种文本类型的语义ID列表（元素：每种文本的所有样本ID）
+                # 1. 初始化RQ索引（FAISS核心API）
+                index = faiss.IndexResidualQuantizer(
+                    sent_emb.shape[-1],  # 当前文本嵌入的维度（如256）
+                    config['n_codebooks'],  # 码本数量（即RQ的层数，如8层）
+                    n_bits,  # 每个码本的比特数（同PQ）
+                    faiss.METRIC_INNER_PRODUCT  # 距离度量：内积
+                )
+                index.train(sent_emb)  # 2. 训练RQ模型：逐层学习码本（第一层量化原始向量，后续层量化前一层的残差）、
+                # 3. 生成当前文本类型的RQ编码（逻辑同PQ，解析二进制编码为整数ID）
+                sem_ids_list.append(faiss_sem_ids.tolist())  # 加入列表：shape=[文本类型数, 样本数, 码本数量]
+                # 4. 合并多类型文本的语义ID（关键！每个样本的ID是所有文本类型ID的拼接）
+                item2sem_ids = [[]]  # 第0位为空列表（适配下游索引）
+                item_num = len(sem_ids_list[0])  # 样本数量（所有文本类型的样本数必须一致
+                for i in range(item_num):  # 遍历每个样本
+                    sem_ids = []
+                    for j in range(type_num):  # 遍历每种文本类型
+                        sem_ids.extend(sem_ids_list[j][i])  # 拼接ID：如title的8个ID + description的8个ID → 16个ID
+                    item2sem_ids.append(sem_ids)
+        第五步：保存语义 ID 文件
+            格式示例
+            [
+                [],  # 第0位为空（适配下游任务样本索引从1开始）
+                [3,5,12,7,9,2,14,6],  # 样本1的PQ语义ID（8个码本→8个ID）
+                [1,8,4,11,3,15,2,9],  # 样本2的PQ语义ID
+                ...
+            ]
+            !!!PS：若为 RQ+2 种文本类型，每个样本的 ID 长度为「码本数量 × 文本类型数」（如 8×2=16 个 ID）
+        注意事项：
+            样本数一致性：所有文本类型的嵌入必须有相同的样本数（如 title 和 description 都对应 10000 个样本），否则 RQ 的 ID 合并会报错。
+            code_num 的限制：code_num必须是 2 的整数次幂（如 16=2⁴、32=2⁵），因为n_bits = log2(code_num)，否则会出现小数比特数，导致 FAISS 报错。
+            PCA 的作用：高维嵌入（如 1024 维）量化时误差较大，PCA 降维（如降到 256 维）可减少冗余，同时加速量化训练。
+            ！！！！如果需要优化，可参考之前的建议：替换为 OPQ（优化 PQ，精度更高）、添加 RQ-Kmeans（适配多模态推荐）、或用 IVF+PQ/RQ 加速大规模数据检索。
+4、main.py
+    这段代码是一个 基于多类型文本语义的序列推荐模型训练框架，核心是 CCFRec 模型（推测是针对推荐场景设计的自定义模型），整合了文本嵌入量化、序列用户行为建模、对比学习（CL）和掩码语言建模（MLM）等功能。整体流程是 “数据准备→文本嵌入处理→模型初始化→训练与评估”。
+    （1）、核心目标：构建一个序列推荐模型，利用用户的历史行为序列 + 物品的多类型文本语义（标题、品牌、特征等），预测用户下一个可能交互的物品，最终输出 recall@5/10、ndcg@5/10 等推荐指标。
+    （2）、整体流程：启动程序 -> 解析命令行参数 -> 初始化随机种子与记录系统 -> 加载数据集（用户行为 + 物品文本量化索引） -> 构建训练 / 验证 / 测试数据集 + 数据加载器 -> 加载多类型文本嵌入 + PCA 降维 -> 初始化 CCFRec 模型 + 加载文本嵌入权重 -> 初始化训练器（CCFTrainer） -> 模型训练（含早停） -> 验证集选取最优模型 -> 测试集评估最终性能输出日志 + 保存结果
+    （3）、导入库依赖
+        import warnings  # 忽略警告
+        from data import load_split_data, CCFSeqSplitDataset, Collator  # 自定义数据处理模块
+        from model import CCFRec  # 核心推荐模型（自定义）
+        from trainer import CCFTrainer  # 模型训练器（自定义，封装训练/评估逻辑）
+        from utils import init_logger, init_seed, get_local_time, log, get_file_name, load_json, combine_index  # 自定义工具函数
+        from logging import getLogger  # 日志系统
+        warnings.filterwarnings("ignore")  # 忽略无关警告（如版本兼容警告）
+        核心依赖：torch（模型训练）、numpy（嵌入处理）、自定义模块（data/model/trainer/utils，是整个框架的核心）
+    （4）、命令行参数解析（parse_arguments函数）
+        作用：通过命令行传入参数，灵活控制模型训练的超参数、路径、设备等，无需修改代码即可调整实验配置。
+        def parse_arguments():
+        parser = argparse.ArgumentParser()  # 创建参数解析器
+
+        # -------------------------- 基础配置 --------------------------
+        parser.add_argument('--seed', type=int, default=2020, help='随机种子（保证实验可复现）')
+        parser.add_argument("--dataset", type=str, default="Musical_Instruments", help="数据集名称")
+        parser.add_argument("--bidirectional", type=bool, default=False, help="是否使用双向序列建模（如双向Transformer）")
+        parser.add_argument('--device', type=str, default="cuda:0", help="训练设备（gpu或cpu，如cuda:0表示第1块GPU）")
+
+        # -------------------------- 模型超参数 --------------------------
+        parser.add_argument('--n_heads', type=int, default=2, help="多头注意力的头数（Transformer相关）")
+        parser.add_argument('--embedding_size', type=int, default=64, help="物品/文本嵌入的维度（统一为64维）")
+        parser.add_argument('--hidden_size', type=int, default=256, help="模型隐藏层维度（如Transformer编码器的隐藏层）")
+        parser.add_argument('--n_layers', type=int, default=2, help="序列建模层的层数（如Transformer编码器层数）")
+        parser.add_argument('--n_layers_cross', type=int, default=2, help="跨模态交互层的层数（文本-行为交互）")
+        parser.add_argument('--dropout_prob', type=float, default=0.5, help="普通层的dropout概率（防止过拟合）")
+        parser.add_argument('--dropout_prob_cross', type=float, default=0.3, help="跨模态层的dropout概率")
+        parser.add_argument('--max_his_len', type=int, default=20, help="用户历史行为序列的最大长度（超过截断，不足补0）")
+
+        # -------------------------- 训练配置 --------------------------
+        parser.add_argument('--epochs', type=int, default=500, help="最大训练轮数")
+        parser.add_argument('--batch_size', type=int, default=2048, help="批量大小（每批处理的样本数）")
+        parser.add_argument('--num_workers', type=int, default=8, help="数据加载的线程数（加速数据读取）")
+        parser.add_argument('--eval_step', type=int, default=1, help="每多少轮验证一次（如1轮训练后验证）")
+        parser.add_argument('--learner', type=str, default="AdamW", help="优化器（AdamW是推荐任务常用优化器）")
+        parser.add_argument('--lr', type=float, default=1e-3, help="学习率")
+        parser.add_argument('--lr_scheduler_type', type=str, default="constant", help="学习率调度器（constant=固定学习率）")
+        parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help="梯度累积步数（显存不足时用）")
+        parser.add_argument('--warmup_steps', type=int, default=500, help="学习率热身步数（防止初始学习率过高）")
+        parser.add_argument('--weight_decay', type=float, default=1e-4, help="L2正则化权重（防止过拟合）")
+        parser.add_argument('--early_stop', type=int, default=10, help="早停耐心值（连续10轮验证集指标不提升则停止训练）")
+
+        # -------------------------- 任务相关配置 --------------------------
+        parser.add_argument('--tau', type=float, default=0.07, help="对比学习的温度参数（控制分布平滑度）")
+        parser.add_argument('--cl_weight', type=float, default=0.1, help="对比学习损失的权重")
+        parser.add_argument('--mlm_weight', type=float, default=0.1, help="掩码语言建模（MLM）损失的权重")
+        parser.add_argument('--neg_num', type=int, default=49, help="负采样数量（每1个正样本配49个负样本）")
+        parser.add_argument('--mask_ratio', type=float, default=0.5, help="MLM任务的掩码比例（如50%的文本token被掩码）")
+
+        # -------------------------- 路径配置 --------------------------
+        parser.add_argument("--data_path", type=str, default="./dataset/", help="数据集根路径")
+        parser.add_argument('--map_path', type=str, default=".emb_map.json", help="嵌入映射文件路径")
+        parser.add_argument('--text_index_path', type=str, default=".code.pq.64_128.json", help="物品文本量化索引路径（PQ量化后的语义ID）")
+        parser.add_argument('--text_emb_path', type=str, default=".t5.meta.emb.npy", help="文本嵌入文件路径（T5模型生成）")
+        parser.add_argument("--log_dir", type=str, default="./logs/", help="日志保存路径")
+        parser.add_argument("--ckpt_dir", type=str, default="./myckpt/", help="模型 checkpoint 保存路径")
+
+        # -------------------------- 评估配置 --------------------------
+        parser.add_argument('--metrics', type=str, default="recall@5,ndcg@5,recall@10,ndcg@10", help="评估指标")
+        parser.add_argument('--valid_metric', type=str, default="ndcg@10", help="验证集最优模型的判断指标（如以ndcg@10为准）")
+
+        # -------------------------- 文本相关配置 --------------------------
+        parser.add_argument('--text_types', nargs='+', type=str, default=["title", "brand", "features", "categories", "description"], help="使用的文本类型（多类型文本融合）")
+        parser.add_argument('--n_codes_per_lel', type=int, default=256, help="每个量化层级的码本数量（文本量化相关）")
+        parser.add_argument('--code_level', type=int, default=4, help="文本量化的层级数（文本量化相关）")
+
+        args, _ = parser.parse_known_args()  # 忽略未知参数（提高兼容性）
+        return args
+    （5）主函数（程序入口，核心逻辑执行）
+        步骤1：初始化配置与日志
+            args = parse_arguments()  # 解析命令行参数
+            args.run_local_time = get_local_time()  # 记录运行时间（用于日志/文件名）
+            args_dict = vars(args)  # 将args转为字典（方便日志打印）
+            # 构建保存文件名（包含超参数，便于区分不同实验）
+            args.save_file_name = get_file_name(args_dict) + \
+                                f"_mlm{args.mlm_weight}_cl{args.cl_weight}_maskratio{args.mask_ratio}_drop{args.dropout_prob}_dpcross{args.dropout_prob_cross}"
+
+            init_seed(args.seed, True)  # 初始化随机种子（torch/numpy/random全固定，保证实验可复现）
+            init_logger(args_dict, args.save_file_name+'.log')  # 初始化日志系统（保存训练日志到文件）
+            device = torch.device(args.device)  # 定义训练设备（GPU/CPU）
+        步骤2：加载数据集与文本量化索引
+            dataset_path = os.path.join(data_path, dataset)  # 数据集具体路径（如./dataset/Musical_Instruments）
+            item2id, n_items, train, val, test = load_split_data(args) 加载用户行为数据（item2id：物品ID映射；n_items：物品总数；train/val/test：用户行为序列）
+        步骤3：构建数据集与数据加载器
+            collator = Collator(args)  # 自定义数据拼接器（将多个样本拼接为批量张量，处理padding、掩码等）
+            train_data_loader = DataLoader() 构建数据加载器（PyTorch的DataLoader，批量读取数据，支持多线程）
+        步骤4：加载并处理多类型文本嵌入
+            text_embs = []  # 存储所有文本类型的嵌入（降维后）
+            for ttype in args.text_types:  # 遍历每种文本类型（title/brand/features等）
+            text_emb_file = f".t5.{ttype}.emb.npy" # 构建当前文本类型的嵌入文件路径（如Musical_Instruments.t5.title.emb.npy）
+            text_emb = PCA(n_components=args.embedding_size, whiten=True).fit_transform(text_emb) PCA降维+白化：将不同文本类型的嵌入统一到args.embedding_size维（默认64维）
+            text_embs.append(text_emb)  # 加入列表（text_embs形状：[文本类型数, 物品数, 64]）
+            args.text_embedding_size = text_embs[0].shape[-1]  # 确认文本嵌入维度（64维）
+        步骤5：初始化模型并加载文本嵌入权重
+            model = CCFRec(args, train_dataset, index, device).to(device)  初始化CCFRec模型（自定义核心模型，接收超参数、训练数据集、文本索引、设备）
+            for i in range(len(args.text_types)): 将多类型文本嵌入加载到模型的嵌入层（item_text_embedding是模型的多类型文本嵌入层列表）
+                # 模型嵌入层的权重从1开始（索引0通常是padding的嵌入，设为0）
+                model.item_text_embedding[i].weight.data[1:] = torch.tensor(
+                    text_embs[i], dtype=torch.float32, device=device
+                )
+        步骤6：模型训练与评估
+            trainer = CCFTrainer(args, model, train_data_loader, val_data_loader, test_data_loader, device) 初始化训练器（CCFTrainer是自定义类，封装了训练循环、验证、测试逻辑）
+            log(model, logger)  # 打印模型结构到日志（便于检查模型配置）
+            best_score, best_results = trainer.fit() 模型训练：返回验证集最优分数和最优结果（含早停逻辑）
+            test_results = trainer.test() 用最优模型在测试集评估（trainer会自动加载验证集最优的checkpoint）
+            log(f"Best Validation Score: {best_score}", logger) 打印最终结果到日志
+5、get_file_name
+    这是一个 生成唯一日志 / 文件名的工具函数，核心逻辑是：将配置参数（排除无关项）转化为字符串，通过 MD5 哈希压缩为短标识，再结合运行时间和后缀，生成一个唯一且可追溯的文件名。
+    作用：不同配置参数对应不同文件名，避免实验结果覆盖；文件名包含运行时间和配置哈希，可通过哈希反向关联原始配置；用 MD5 哈希将长配置字符串压缩为 6 位，避免文件名过长。
+    (1)函数定义与参数
+        config: dict：输入的配置字典（如之前代码中的 args_dict = vars(args)，包含所有实验超参数）；
+        suffix: str = ''：文件名后缀（可选，如 .log、.pth，默认空字符串）；
+        返回值：生成的唯一文件名（字符串）。
+    (2)过滤配置并转化为字符串
+        config_str = "".join([str(value) for key, value in config.items() if (key != 'accelerator' and key != 'device') ])
+        这行是核心步骤，作用是 将配置字典转化为无歧义的字符串，具体拆解：
+            config.items()：遍历配置字典的所有键值对（如 ('batch_size', 2048)、('lr', 0.001)）；
+            if (key != 'accelerator' and key != 'device')：过滤无关键（accelerator 加速框架、device 训练设备，这些参数不影响实验核心逻辑，过滤后确保相同实验配置即使换设备也能生成相同哈希）；
+            str(value)：将每个键对应的 “值” 转化为字符串（如 2048 → "2048"、0.001 → "0.001"）；
+            "".join(...)：将所有过滤后的 “值字符串” 拼接成一个长字符串（如 config 包含 batch_size=2048、lr=0.001、seed=2020，则 config_str = "20480.0012020..."）。
+    (3)MD5 哈希压缩（生成短标识）
+        作用：将长配置字符串压缩为 6 位唯一标识，避免文件名过长，具体步骤：
+        config_str.encode(encoding="utf-8")：将字符串编码为 UTF-8 字节流（MD5 哈希函数要求输入为字节流）；
+        hashlib.md5(...)：创建 MD5 哈希对象（MD5 是一种哈希算法，可将任意长度数据转化为 128 位哈希值）；
+        .hexdigest()：将 128 位哈希值转化为 32 位十六进制字符串（如 'e10adc3949ba59abbe56e057f20f883e'）；
+        [:6]：截取前 6 位字符串（如 'e10adc'），既保证唯一性（6 位十六进制有 16^6=16777216 种组合，足够区分实验配置），又足够简洁。
+    (4)拼接最终文件名
+        logfilename = "{}-{}{}".format(config['run_local_time'], md5, suffix)
+        config['run_local_time']：运行时间字符串（如之前代码中 args.run_local_time = get_local_time()，格式可能为 20251120_143059，即年月日_时分秒）；
+        {}-{}{}：格式化字符串，拼接 “运行时间 + 6 位 MD5 哈希 + 后缀”；
+        示例输出：若 run_local_time = "20251120_143059"、md5 = "e10adc"、suffix = ".log"，则最终文件名 logfilename = "20251120_143059-e10adc.log"
+6、init_seed
+    这段代码是一个用于初始化随机种子的工具函数，目的是保证实验的可复现性（即相同代码、相同参数在不同环境下运行能得到完全一致的结果）。
+    核心作用：对 Python 原生随机库（random）、数值计算库（numpy）、深度学习框架（torch）以及 GPU 相关模块（cuda、cudnn）的随机种子进行统一初始化，同时控制 CUDA 的确定性（cudnn.deterministic）和性能优化（cudnn.benchmark）。
+    （1）参数说明
+        seed：整数类型的随机种子（如 2020），所有随机操作将基于该种子初始化；
+        reproducibility：布尔值，控制是否严格要求 “可复现性”（开启后会牺牲部分性能，换取结果确定性）。
+    （2）初始化各库的随机种子
+        random.seed(seed)  # 初始化 Python 原生 random 库的随机种子
+        np.random.seed(seed)  # 初始化 numpy 的随机种子（控制 np.random 相关操作）
+        torch.manual_seed(seed)  # 初始化 PyTorch CPU 端的随机种子
+        torch.cuda.manual_seed(seed)  # 初始化 PyTorch 单 GPU 端的随机种子
+        torch.cuda.manual_seed_all(seed)  # 初始化 PyTorch 多 GPU 端的随机种子（若使用多卡训练）
+        这一步是可复现性的基础：确保 random 模块的随机采样、numpy 的数组随机生成、torch 的张量初始化 / 模型训练过程中的随机操作（如 Dropout、权重初始化）完全可复现。
+    （3） 控制 CUDA 的确定性与性能（核心细节）
+        torch.backends.cudnn.benchmark
+            若设为 True，CUDA 会在训练初期自动测试多种卷积算法，选择最快的一种，提升训练速度，但会引入随机性（不同设备 / 运行次数可能选择不同算法，导致结果差异）
+            若设为 False，则固定使用默认算法，牺牲部分速度，但保证结果确定性。
+        torch.backends.cudnn.deterministic
+            若设为 True，CUDA 会强制使用确定性算法（如卷积、池化的计算方式固定），保证结果完全可复现
+            若设为 False，则允许使用非确定性算法（可能更快，但结果不可复现）
+7、init_logger
+    这是一个 日志系统初始化工具函数，核心作用是：在指定目录下创建结构化的日志文件，同时配置 “控制台输出 + 文件保存” 双渠道日志，方便实验过程的实时查看和后续追溯。
+    （1）核心价值
+        日志目录结构化：按 “日志根目录→数据集名称” 创建文件夹，避免不同数据集的日志混乱；
+        双渠道输出：日志同时打印到控制台（实时查看）和文件（永久保存）；
+        日志格式标准化：统一日志的时间、级别、内容格式，便于后续解析和排查问题。
+    （2）函数定义与参数
+        config: dict：配置字典（必须包含 log_dir（日志根目录）、dataset（数据集名称）等键）；
+        filename: str = None：自定义日志文件名（可选），若为 None 则通过 get_file_name 自动生成唯一文件名。
+    （3）创建结构化日志目录
+        LOGROOT = config['log_dir']  # 从配置中获取日志根目录（如之前代码中的 ./logs/）
+        dataset_name = os.path.join(LOGROOT, config["dataset"]) 构建数据集专属日志目录（如 ./logs/Musical_Instruments/）
+        目录结构示例：
+            ./logs/  # 日志根目录（LOGROOT）
+            └── Musical_Instruments/  # 数据集专属目录（dataset_name）
+                └── 20251120_143059-e10adc.log  # 最终日志文件
+    （4）确定日志文件名与路径
+        logfilename = get_file_name(config, suffix='.log') if filename is None else filename 若未指定自定义文件名，则用 get_file_name 生成唯一文件名（含时间+MD5哈希），后缀为 .log
+        logfilepath = os.path.join(LOGROOT, config["dataset"], logfilename) # 拼接最终日志文件路径（日志根目录/数据集名称/日志文件名）
+    （5）配置日志格式（标准化输出）
+        filefmt = "%(asctime)-15s %(levelname)s  %(message)s" 日志内容格式：时间 + 日志级别 + 日志信息
+        filedatefmt = "%a %d %b %Y %H:%M:%S" 时间格式：星期 日 月 年 时:分:秒（如 Thu 20 Nov 2025 14:30:59）
+        fileformatter = logging.Formatter(filefmt, filedatefmt) 创建格式化器（将格式应用到日志）
+        作用：将所有 logging.info()、logging.warning() 等调用的日志，按格式保存到 logfilepath 指定的文件中，永久留存。
+    （6）配置控制台日志处理器（实时打印）
+        sh = logging.StreamHandler()  # 创建控制台处理器，输出到终端/命令行
+        sh.setLevel(logging.INFO)  # 控制台同样只显示 INFO 及以上级别日志
+        注：控制台日志未指定 formatter，会使用默认格式（仅日志级别+信息）；若想和文件格式一致，可添加 sh.setFormatter(fileformatter)
+    （7）初始化日志系统
+        logging.basicConfig(level=logging.INFO, handlers=[sh, fh])
+            logging.basicConfig()：Python logging 模块的全局配置函数，用于设置日志系统的默认行为；
+            level=logging.INFO：全局日志级别，低于 INFO 的日志（如 DEBUG）会被忽略；
+            handlers=[sh, fh]：指定日志处理器列表，即日志同时通过 “控制台处理器（sh）” 和 “文件处理器（fh）” 输出。
+    （8）日志级别说明
+        Python logging 模块的日志级别（从低到高）：DEBUG < INFO < WARNING < ERROR < CRITICAL。这里设置 level=logging.INFO，意味着：
+            logging.debug("详细调试信息")：不会输出到控制台或文件（仅调试时用）；
+            logging.info("普通信息")、logging.warning("警告信息") 等：会同时输出到控制台和文件。
+8、log
+    这是一个 日志打印封装函数，核心作用是：在 分布式训练场景 下控制日志输出（仅让主进程打印日志，避免多进程重复输出），同时支持多日志级别（info/error/warning/debug），兼容单进程和分布式训练模式。
+    在 DDP（分布式数据并行）等多进程训练时，仅让主进程（main_process）打印日志，避免多个 GPU 进程同时输出导致日志混乱（如重复打印 2 次相同的训练日志）
+9、load_split_data
+    这是一个 序列推荐任务的数据集加载与预处理函数，核心作用是：读取用户 - 物品交互数据（训练 / 验证 / 测试集）、物品元数据和 ID 映射表，将原始物品 ID（如字符串形式）转换为模型可处理的整数 ID，并构建 “用户历史交互序列 + 目标物品” 的训练样本格式。
+    （1）def transform_token2id_seq(item_seqs, item2id):内部辅助函数：将原始物品序列（字符串ID）转换为整数ID序列，并拼接目标物品
+        id_seqs = []  # 存储转换后的整数ID序列（每个元素是一个样本：历史序列+目标物品）
+        for one_piece in item_seqs:  # 遍历每个用户的交互记录（一个样本）
+            # 提取用户的历史交互物品序列（如 ["item_123", "item_456"]）
+            item_seq = one_piece["inter_history"]
+            # 将历史序列中的每个物品ID（字符串）转为整数ID（通过item2id映射表）
+            item_id_seq = [item2id[item] for item in item_seq]
+
+            # 提取当前样本的目标物品ID（需预测的下一个物品），转为整数ID
+            target_id = item2id[one_piece["target_id"]]
+            # 拼接“历史序列+目标物品”：如 [123, 456] + [789] → [123, 456, 789]
+            id_seqs.append(item_id_seq + [target_id])
+        return id_seqs
+        辅助函数 transform_token2id_seq 核心逻辑：
+            输入：item_seqs（原始交互数据，每个元素是一个用户的 “历史序列 + 目标物品” 字典）、item2id（物品 ID 映射表：原始 ID→整数 ID）；
+            输出：id_seqs（整数 ID 序列列表，每个样本格式为 [历史物品1, 历史物品2, ..., 目标物品]）；
+            目的：模型训练时，会从 “历史序列” 学习特征，预测 “目标物品”，这种格式直接适配序列推荐的训练范式。
+    （2）构建数据集路径
+         data_path = args.data_path  # 从参数获取数据集根路径（如 ./dataset/）
+        dataset = args.dataset  # 数据集名称（如 Musical_Instruments）
+        dataset_path = os.path.join(data_path, dataset)  # 数据集具体路径（如 ./dataset/Musical_Instruments/）
+    （3）读取核心文件（关键依赖文件说明）
+        all_items = load_json(os.path.join(dataset_path, dataset + ".item.json")) 读取所有物品的元数据（如物品名称、文本信息等），用于统计物品总数
+        item2id = load_json(os.path.join(dataset_path, dataset + args.map_path)) 读取物品ID映射表（原始物品ID→整数ID），避免原始ID是字符串/非连续整数
+        读取训练/验证/测试集的用户交互数据（JSONL格式：每行一个JSON对象）
+        JSONL 格式说明：每行一个样本，避免单个 JSON 文件过大难以加载，示例 train.jsonl 格式：
+            {"inter_history": ["item_123", "item_456"], "target_id": "item_789"}  # 用户1的训练样本
+            {"inter_history": ["item_456", "item_789"], "target_id": "item_321"}  # 用户2的训练样本
+    （4）原始 ID 序列 → 整数 ID 序列（核心预处理）
+        train_seq = transform_token2id_seq(train_inter, item2id)  训练集：原始交互序列 → 整数ID序列
+    （5）统计物品总数与返回结果
+        return item2id, n_items, train_seq, valid_seq, test_seq 返回结果：ID映射表、物品总数、训练/验证/测试集的整数ID序列   
+10、CCFSeqSplitDataset
+    这是一个 序列推荐任务的自定义数据集类（继承自 PyTorch 的 Dataset），核心作用是：将 load_split_data 生成的 “整数 ID 序列” 进一步处理为模型可直接输入的样本格式，整合「物品 ID 序列」「文本量化编码序列」和「MLM 掩码任务」，适配 CCFRec 模型的多任务训练需求。
+    （1）构建 “多模态输入样本”
+        物品交互序列（用户历史交互的物品整数 ID）；
+        目标物品（需预测的下一个物品 ID）；
+        文本量化编码序列（物品文本 PQ/RQ 量化后的语义 ID，多维度拼接）；
+        MLM 掩码目标（文本编码序列的掩码标签，用于掩码语言建模任务）。
+    （2）依赖前提
+        输入的 inter_seq：来自 load_split_data 的整数 ID 序列（格式 [历史物品1, 历史物品2, ..., 目标物品]）；
+        输入的 index：物品文本量化索引（如 PQ 量化后的语义 ID 字典，格式 {物品整数ID: [量化ID1, 量化ID2, ...]}）；
+        超参数：max_his_len（历史序列最大长度）、code_level（量化层级）、n_codes_per_lel（每层量化码数）等
+    （3）__init__ 构造函数（初始化数据集）
+        self.n_items = n_items  # 物品总数（无padding，padding用0）
+        self.args = args  # 超参数配置
+        self.max_his_len = args.max_his_len  # 历史序列最大长度（如20）
+        self.n_digits = args.code_level  # 文本量化的层级数（如4，对应RQ的层数/PQ的子空间数）
+        # 总量化码数 = 每层码数 × 层级数（+1是因为量化ID从1开始，0留作mask）
+        self.n_codes = args.n_codes_per_lel * args.code_level
+        self.index = index  # 物品文本量化索引字典（{物品ID: [量化ID1, 量化ID2, ...]}）
+        self.mask_token_id = 0  # mask标记的ID（用于MLM任务）
+        self.mode = mode  # 数据集模式（train/val/test）
+        self.mask_ratio = args.mask_ratio  # MLM任务的掩码比例（如0.5）
+        self.inter_data = self.__map_inter__(inter_seq)  # 核心：处理原始序列为模型输入格式
+        关键参数关联：
+            n_digits：对应文本量化的 “维度数”（如 RQ 的 4 层量化，每个物品的量化 ID 是 4 个数字）；
+            n_codes：所有可能的量化 ID 总数（如每层 256 码、4 层 → 256×4=1024 种量化 ID）；
+            mode：训练模式下会启用 MLM 掩码，验证 / 测试模式不掩码（仅用序列推荐任务）。
+    （4）__map_inter__ 核心预处理（构建样本数据）
+        作用：将原始整数 ID 序列（[历史1, 历史2, ..., 目标]）转换为 “物品序列 + 文本编码序列” 的字典格式，是数据集的核心预处理步骤。
+        inter_data = []  # 存储最终样本列表
+        for seq in inter_seq:  # 遍历每个原始序列（格式 [h1, h2, ..., hn, t]）
+            # 1. 处理物品交互序列：截取最后max_his_len个历史物品（超过截断，不足保留）
+            # seq[:-1]：去掉最后一个目标物品，仅保留历史序列；[-self.max_his_len:]：截断到最大长度
+            item_seq = seq[:-1][-self.max_his_len:]
+            
+            # 2. 构建文本量化编码序列（核心：将每个物品的量化ID映射为全局唯一ID）
+            code_seq = []
+            for item in item_seq:  # 遍历历史序列中的每个物品
+                id = []
+                # 遍历该物品的每个量化维度（如4层量化，每个物品有4个量化ID）
+                for i in range(self.n_digits):
+                    # 量化ID映射公式：当前量化ID + 层级偏移量 + 1
+                    # 目的：将不同层级的量化ID转为全局唯一ID（避免不同层级的相同数字冲突）
+                    # 示例：层级0的量化ID10 → 10 + 0×256 +1=11；层级1的量化ID10 →10+1×256+1=267
+                    id.append(self.index[item][i] + i * self.args.n_codes_per_lel + 1)
+                code_seq.extend(id)  # 拼接当前物品的所有量化ID（如4个 → 4个数字）
+            
+            # 3. 存储样本：物品序列、编码序列、目标物品
+            inter_data.append({
+                "item_inter": item_seq,  # 历史物品ID序列（长度≤max_his_len）
+                "code_inter": code_seq,  # 文本量化编码序列（长度=物品序列长度×n_digits）
+                "target": seq[-1]  # 目标物品ID（需预测的下一个物品）
+            })
+        return inter_data
+    （5）__getitem__ 索引函数（获取单个样本）
+        data = self.inter_data[idx]  # 获取预处理后的样本
+        item_inter = data['item_inter']  # 物品序列（如 [1,2,3,4]）
+        code_inter = np.array(data['code_inter'])  # 文本编码序列（如 [11,267,523,779]）
+        target = data["target"]  # 目标物品ID（如5）
+
+        # 初始化MLM掩码目标：默认全为-100（PyTorch中-100表示该位置不参与损失计算）
+        mask_target = np.ones_like(code_inter) * -100
+
+        # 训练模式下：对文本编码序列做MLM掩码（验证/测试模式不掩码）
+        if self.mode == "train":
+            L = len(item_inter)  # 物品序列长度（如4）
+            # 重塑编码序列为 [物品数, 量化维度数]（如 [4,4]），方便按物品/维度掩码
+            code_inter, mask_target = self.__mask__(code_inter.reshape(L, -1))
+
+        # 返回样本：物品序列、目标物品、编码序列、掩码目标
+        return item_inter, target, code_inter, mask_target
+        输出格式说明：
+            item_inter：list（长度≤max_his_len）→ 后续 Collator 会 padding 到 max_his_len；
+            target：int → 模型的推荐任务标签；
+            code_inter：np.array（长度 = 物品数 ×n_digits）→ 后续 padding 到 max_his_len×n_digits；
+            mask_target：np.array（与 code_inter 同长度）→ MLM 任务标签（被掩码的位置是原始编码 ID，其他是 - 100）
+    （6）__mask__ 掩码函数（MLM 任务核心）
+        模仿 BERT 的掩码语言建模，对文本编码序列随机掩码，用于增强模型对文本语义的理解。
+        BL, C = code_inter.shape[0], code_inter.shape[1]  # BL=物品数，C=量化维度数（如4）
+        mask_target = np.ones_like(code_inter) * -100  # 初始化掩码目标
+
+        # 1. 生成随机掩码矩阵：mask_ratio比例的位置为True（需要掩码）
+        mask = np.random.rand(BL, C) < self.mask_ratio
+        mask_idx, mask_idy = np.where(mask)  # 获取所有掩码位置的坐标（物品索引，维度索引）
+
+        # 2. 记录掩码位置的原始编码ID（作为MLM任务的标签）
+        mask_target[mask] = code_inter[mask]
+
+        # 3. 对掩码位置进行三种处理（BERT标准掩码策略）
+        for x, y in zip(mask_idx, mask_idy):
+            rand = np.random.rand()  # 生成0-1随机数
+            if rand < 0.8:  # 80%概率：替换为mask_token_id（0）
+                code_inter[x, y] = self.mask_token_id
+            elif rand < 0.9:  # 10%概率：替换为随机量化ID（1~n_codes）
+                code_inter[x, y] = np.random.randint(1, self.n_codes + 1)
+            else:  # 10%概率：保持原始ID不变（避免模型过度依赖mask标记）
+                pass
+
+        # 4. 重塑为一维数组（便于后续padding和模型输入）
+        code_inter = code_inter.reshape(-1)
+        mask_target = mask_target.reshape(-1)
+
+        return code_inter, mask_target
+        掩码策略解析（与 BERT 一致，平衡训练稳定性和泛化能力）：
+            80% 掩码：强制模型通过上下文预测被掩盖的文本编码；
+            10% 随机替换：防止模型仅学习 “mask 标记→某固定 ID” 的映射，增强鲁棒性；
+            10% 保持不变：避免模型过度依赖 mask 标记的位置信息。
+    （7）__len__ 长度函数（数据集大小）
+        PyTorch Dataset 类的必需方法，返回数据集的样本总数。
+11、Collator
+    这是一个 PyTorch 数据加载的批量处理类（Collator），核心作用是：将 CCFSeqSplitDataset 生成的 “变长样本”（不同用户的历史序列长度不同）统一处理为 固定长度的批量张量，适配模型的批量训练需求。它还会整合样本的长度信息、类型转换等，是连接数据集和模型输入的关键桥梁。
+    （1）类的核心定位
+        Collator 是 DataLoader 的 collate_fn 参数（批量处理函数），作用是：
+            解决 “样本长度不一致” 问题：通过 pad_sequence 给短序列填充（padding），让同一批次所有样本长度相同；
+            格式标准化：将列表形式的样本转换为 PyTorch 张量，并调整维度顺序；
+            适配多模态输入：同时处理「物品 ID 序列」和「文本量化编码序列」，并保留长度信息（用于后续注意力掩码）。
+    （2）__init__ 构造函数（初始化配置）
+        n_digits：用于后续调整「文本编码序列」的维度（每个物品对应 n_digits 个量化 ID）；
+        max_his_len：作为 padding 的目标长度（所有序列最终被填充到该长度）。
+    （3）__call__ 核心批量处理函数
+        DataLoader 每次从数据集取一批样本后，会调用该方法进行批量处理。输入 batch 是数据集 __getitem__ 返回的样本列表（每个元素是一个样本的 tuple）
+        步骤1：拆分批量样本的各个字段
+            item_inters, targets, code_inters, mask_targets = zip(*batch)
+            batch 是列表，每个元素 = (item_inter, target, code_inter, mask_target)
+            zip(*batch) 会将所有样本的同一字段拆分到一起（如所有 item_inter 组成一个列表）
+            拆分后的数据格式（以 batch_size=2 为例）：
+                item_inters：[(物品序列1), (物品序列2)]（如 [[1,2,3], [4,5]]，长度分别为 3 和 2）；
+                targets：[目标1, 目标2]（如 [4,6]）；
+                code_inters：[(编码序列1), (编码序列2)]（如 [[11,267,543,809], [12,268]]，长度 = 物品序列长度 ×n_digits）；
+                mask_targets：[(掩码目标1), (掩码目标2)]（和 code_inters 长度一致，-100 为填充值）
+        步骤 2：计算每个样本的真实序列长度
+            inter_lens = get_seqs_len(item_inters)
+            get_seqs_len 是自定义工具函数：计算每个物品序列的真实长度（不含 padding），用于后续模型的「注意力掩码」（避免模型关注 padding 位置）。
+        步骤 3：处理「物品 ID 序列」（item_inters）
+            # 3.1 列表→张量：将每个物品序列转换为 PyTorch 张量
+            item_inters = [torch.tensor(inter) for inter in item_inters]
+            # 3.2 Padding：填充到 max_his_len，默认填充值为0（PyTorch 张量的默认padding值）
+            # pad_sequence 会按序列长度降序排列后填充，返回形状为 (max_his_len, batch_size) 的张量
+            # transpose(0,1)：调整维度为 (batch_size, max_his_len)（模型习惯的 batch_first 格式）
+            item_inters = pad_sequence(item_inters).transpose(0, 1)
+            示例（max_his_len=4）：
+                原始 item_inters 张量列表：[tensor([1,2,3]), tensor([4,5])]；
+                pad_sequence 后：tensor([[1,2,3,0], [4,5,0,0]])（形状 (2,4)）
+        步骤 4：处理「文本量化编码序列」（code_inters）
+            # 4.1 列表→张量：将每个编码序列转换为 PyTorch 张量
+            code_inters = [torch.tensor(inter) for inter in code_inters]
+            # 4.2 Padding：填充到 (max_his_len × n_digits) 长度（每个物品对应 n_digits 个编码）
+            # 填充后维度：(max_his_len × n_digits, batch_size) → transpose 后 (batch_size, max_his_len × n_digits)
+            code_inters = pad_sequence(code_inters).transpose(0, 1)
+            # 4.3 调整维度：reshape 为 (batch_size, max_his_len, n_digits)
+            # 目的：让模型明确“每个物品对应 n_digits 个量化ID”（便于按物品/编码维度处理）
+            code_inters = code_inters.reshape(-1, self.max_his_len, self.n_digits)
+            示例（max_his_len=4，n_digits=4）：
+                原始 code_inters 张量列表：[tensor([11,267,543,809]), tensor([12,268])]；
+                pad_sequence 后：tensor([[11,267,543,809,0,0,0,0,0,0,0,0,0,0,0,0], [12,268,0,...0]])（形状 (2, 16)，16=4×4）；
+                reshape 后：tensor([[[11,267,543,809], [0,0,0,0], [0,0,0,0], [0,0,0,0]], ...])（形状 (2,4,4)）。
+        步骤 5：处理「目标物品」（targets）
+            targets = torch.tensor(targets)  # 直接将目标列表转换为张量（形状 (batch_size,)）
+        步骤 6：处理「MLM 掩码目标」（mask_targets）
+            # 6.1 列表→张量：将每个掩码目标转换为 PyTorch 张量
+            mask_targets = [torch.tensor(mask_target) for mask_target in mask_targets]
+            # 6.2 Padding：填充到 (max_his_len × n_digits) 长度，padding_value=-100（PyTorch中-100不参与损失计算）
+            # 维度调整：(max_his_len × n_digits, batch_size) → (batch_size, max_his_len × n_digits)
+            mask_targets = pad_sequence(mask_targets, padding_value=-100).transpose(0, 1)
+            # 6.3 调整维度：reshape 为 (batch_size, max_his_len × n_digits)（或 (batch_size, max_his_len, n_digits)，不影响损失计算）
+            mask_targets = mask_targets.reshape(-1)
+            关键细节：
+                padding_value=-100：确保 padding 位置不参与 MLM 任务的损失计算（模型会忽略 -100 标签）；
+                最终形状：(batch_size × max_his_len × n_digits,)（一维张量），也可保留二维 / 三维，PyTorch 损失函数会自动处理。
+        步骤 7：返回批量张量（字典格式）
+            long() 将张量转为整数类型（适配模型嵌入层的索引要求，嵌入层需要整数索引）；
+12、SeqBaseModel
+    这是一个 序列推荐模型的基类（SeqBaseModel），继承自 PyTorch 的 nn.Module，封装了序列推荐任务中通用的辅助函数，包括序列特征提取、注意力掩码生成等核心逻辑，为子类模型（如 CCFRec）提供基础支持。以下是逐方法详细解析：
+    （1）类的核心定位
+        gather_indexes：从序列输出中提取指定位置的特征（如序列最后一个有效位置的表征）；
+        get_attention_mask：生成序列推荐专用的单向注意力掩码（防止模型 “偷看” 未来序列元素）；
+        get_code_attention_mask：为文本量化编码序列生成专用的注意力掩码（适配多维度量化编码的结构）。
+    （2）gather_indexes：提取序列指定位置的特征
+         """
+        从批量序列输出中，提取每个样本的指定位置特征（如序列最后一个有效位置）
+        :param output: 序列模型的输出，形状为 [B, L, H]（B=批次大小，L=序列长度，H=特征维度）
+        :param gather_index: 每个样本需要提取的位置索引，形状为 [B]（如序列真实长度-1）
+        :return: 提取后的特征，形状为 [B, H]
+        """
+        # 步骤1：调整索引形状，适配张量 gather 操作
+        # gather_index 原始形状 [B] → 调整为 [B, 1, 1]，再扩展为 [B, 1, H]（与 output 最后一维匹配）
+        gather_index = gather_index.view(-1, 1, 1).expand(-1, -1, output.shape[-1])
+        # 步骤2：沿序列维度（dim=1）提取指定位置的特征
+        output_tensor = output.gather(dim=1, index=gather_index)
+        # 步骤3：压缩维度，返回形状 [B, H]
+        return output_tensor.squeeze(1)
+
+        核心作用：在序列推荐中，模型通常需要关注 “序列最后一个有效元素” 的特征（如用户最后一次交互的物品），该函数通过 gather 操作高效提取这一位置的特征，避免手动切片的繁琐和错误。
+        示例：
+            output 形状 [2, 5, 64]（2 个样本，每个序列长度 5，特征维度 64）；
+            gather_index 形状 [2]（如 [3, 4]，表示第一个样本取第 3 个位置，第二个样本取第 4 个位置）；
+            输出形状 [2, 64]，即每个样本的指定位置特征。
+    （3）get_attention_mask：生成序列单向注意力掩码
+        """
+        生成序列推荐的注意力掩码，确保模型只能关注“历史序列”（防止偷看未来元素）
+        :param item_seq: 物品序列，形状为 [B, L]（0 表示 padding）
+        :param bidirectional: 是否双向注意力（序列推荐通常为 False，仅关注历史）
+        :return: 注意力掩码，形状为 [B, 1, L, L]，值为 0（可关注）或 -10000（不可关注）
+        """
+        # 步骤1：生成基础掩码（True 表示有效位置，False 表示 padding）
+        attention_mask = item_seq != 0  # 形状 [B, L]
+        # 步骤2：扩展维度，适配多头注意力的输入格式 [B, 1, 1, L]
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # torch.bool
+        # 步骤3：生成下三角掩码（仅允许关注当前及之前的位置）
+        if not bidirectional:
+            # 扩展为 [B, 1, L, L]，并生成下三角矩阵（tril）
+            extended_attention_mask = torch.tril(
+                extended_attention_mask.expand((-1, -1, item_seq.size(-1), -1))
+            )
+        # 步骤4：转换为数值掩码（0 表示可关注，-10000 表示不可关注）
+        extended_attention_mask = torch.where(extended_attention_mask, 0.0, -10000.0)
+        return extended_attention_mask
+
+        核心作用：在 Transformer 等自注意力模型中，单向注意力掩码确保模型在处理第 i 个元素时，只能关注第 1~i 个元素（防止 “偷看” 未来元素，符合序列推荐的时序逻辑）。
+        示例：
+            item_seq 形状 [2, 5]（如 [[1,2,3,0,0], [4,5,0,0,0]]）；
+            生成的 extended_attention_mask 形状 [2, 1, 5, 5]，其中下三角区域为 0，其余为 -10000，确保每个位置只能关注历史元素。
+    （4）get_code_attention_mask：生成文本量化编码的注意力掩码
+        """
+        为文本量化编码序列生成注意力掩码，适配“物品-量化维度”的二维结构
+        :param item_seq: 物品序列，形状为 [B, L]（0 表示 padding）
+        :param code_level: 量化层级数（如 4）
+        :return: 注意力掩码，形状为 [B, 1, L, L×code_level]，值为 0 或 -10000
+        """
+        B, L = item_seq.size()
+        # 步骤1：生成基础物品级掩码（True 表示有效物品，False 表示 padding）
+        attention_mask = item_seq != 0  # 形状 [B, L]
+        # 步骤2：扩展维度，适配多头注意力 [B, 1, 1, L]
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # torch.bool
+        # 步骤3：生成物品级下三角掩码 [B, 1, L, L]
+        extended_attention_mask = torch.tril(
+            extended_attention_mask.expand((-1, -1, L, -1))
+        )
+        # 步骤4：扩展到量化维度，适配“物品×量化层级”的结构
+        # 形状从 [B, 1, L, L] → [B, 1, L, L, code_level] → 转置后 [B, 1, L, code_level, L] → 展平为 [B, 1, L, L×code_level]
+        extended_attention_mask = extended_attention_mask.unsqueeze(3).expand(-1, -1, -1, code_level, -1).transpose(3, 4)
+        extended_attention_mask = extended_attention_mask.reshape(B, 1, L, L*code_level)
+        # 步骤5：转换为数值掩码
+        extended_attention_mask = torch.where(extended_attention_mask, 0.0, -10000.0)
+        return extended_attention_mask
+
+        核心作用：文本量化编码是 “物品 × 量化层级” 的二维结构（如每个物品有 4 个量化 ID），该函数生成的掩码确保：
+            物品维度：只能关注历史物品（同 get_attention_mask 的下三角逻辑）；
+            量化维度：每个物品的量化 ID 之间无掩码限制（可自由关注）。
+        示例：
+            item_seq 形状 [2, 5]，code_level=4；
+            生成的 extended_attention_mask 形状 [2, 1, 5, 20]（5×4=20），确保物品维度的历史关注，量化维度的自由关注。
+13、CCFRec
+    这是一个 序列推荐 + 多任务融合的深度学习模型（CCFRec），核心基于 Transformer 架构，整合了「文本量化语义融合」「掩码语言建模（MLM）」「对比学习（CL）」三大核心模块，适配序列推荐任务的同时，增强模型对物品文本语义的理解和泛化能力。
+    （1）核心任务
+        主任务：序列推荐—— 根据用户历史交互物品序列，预测下一个可能交互的物品；
+        辅助任务：
+            MLM（掩码语言建模）：通过掩码文本量化编码，让模型学习物品文本的语义关联；
+            CL（对比学习）：通过数据增强（掩码编码序列）构建正负样本，提升模型对序列的表征能力；
+        多模态融合：结合「物品交互时序特征」和「物品文本量化语义特征」，让推荐更精准。
+        流程：输入（物品序列 / 量化编码 / 标签）→ 嵌入层（物品文本嵌入 + 量化编码嵌入）→ Q-Former 交叉注意力融合（物品级表征）→ 位置嵌入 + 正则化（时序特征增强）→ Transformer 编码器（序列表征）→ 多任务损失计算（推荐损失 + MLM 损失 + CL 损失）→ 模型优化
+    （2）__init__ 构造函数（模型初始化）
+        核心是初始化模型参数、嵌入层、网络模块，奠定模型结构基础。
+        super(CCFRec, self).__init__()
+        # 1. 加载超参数（从配置中读取，控制模型结构和训练）
+        self.n_layers = args.n_layers  # Transformer 编码器层数（时序特征提取）
+        self.n_layers_cross = args.n_layers_cross  # 交叉注意力层数（文本-量化融合）
+        self.n_heads = args.n_heads  # 多头注意力头数
+        self.embedding_size = args.embedding_size  # 嵌入维度（核心特征维度）
+        self.hidden_size = args.hidden_size  # Transformer 内部FeedForward隐藏层维度
+        self.neg_num = args.neg_num  # 负样本数量（推荐任务）
+        self.text_num = len(args.text_types)  # 文本类型数量（如title/brand等5种）
+
+        self.max_seq_length = args.max_his_len  # 历史序列最大长度
+        self.code_level = args.code_level  # 文本量化层级数（如4）
+        self.n_codes_per_lel = args.n_codes_per_lel  # 每层量化码数（如256）
+        self.hidden_dropout_prob = args.dropout_prob  # dropout概率（防止过拟合）
+        self.attn_dropout_prob = args.dropout_prob  # 注意力dropout概率
+        self.hidden_dropout_prob_cross = args.dropout_prob_cross  # 交叉注意力dropout
+        self.attn_dropout_prob_cross = args.dropout_prob_cross  # 交叉注意力dropout
+        self.hidden_act = "gelu"  # 激活函数（Transformer常用）
+        self.layer_norm_eps = 1e-12  # 层归一化epsilon（数值稳定性）
+
+        self.initializer_range = 0.02  # 参数初始化标准差
+        # 2. 处理量化ID映射表（index）：转为全局唯一ID（与CCFSeqSplitDataset逻辑一致）
+        index[0] = [0] * self.code_level  # padding物品（ID=0）的量化ID设为全0
+        self.index = torch.tensor(index, dtype=torch.long, device=device)  # 转为张量（物品数 × code_level）
+        # 量化ID全局唯一化：i×n_codes_per_lel+1（避免不同层级量化ID冲突）
+        for i in range(self.code_level):
+            self.index[:, i] += i * self.n_codes_per_lel + 1
+
+        # 3. 定义核心维度（物品数、量化码总数）
+        self.n_items = dataset.n_items + 1  # 物品总数（+1是因为物品ID从1开始，0为padding）
+        self.n_codes = args.n_codes_per_lel * args.code_level + 1  # 量化码总数（+1是padding=0）
+        self.tau = args.tau  # 温度系数（控制对比学习/推荐任务的概率分布平滑度）
+        self.cl_weight = args.cl_weight  # 对比学习损失权重
+        self.mlm_weight = args.mlm_weight  # MLM损失权重
+        self.device = device  # 训练设备（CPU/GPU）
+
+        # 4. 嵌入层定义（核心：将离散ID转为连续向量）
+        self.query_code_embedding = nn.Embedding(
+            self.n_codes, self.embedding_size, padding_idx=0  # 量化码嵌入层（n_codes × embedding_size）
+        )
+        # 物品文本嵌入层（多文本类型：每个文本类型一个独立嵌入层，如title/brand各一个）
+        self.item_text_embedding = nn.ModuleList([
+            nn.Embedding(self.n_items, self.embedding_size, padding_idx=0)
+            for _ in range(self.text_num)
+        ])
+        self.item_text_embedding.requires_grad_(False)  # 冻结文本嵌入层（预训练好的，不参与微调）
+        # 位置嵌入层（时序特征：给每个序列位置分配一个向量，捕捉时序信息）
+        self.position_embedding = nn.Embedding(self.max_seq_length, self.embedding_size)
+
+        # 5. 核心网络模块（Transformer架构）
+        # 交叉注意力Transformer（Q-Former）：融合文本嵌入和量化码嵌入
+        self.qformer = CrossAttTransformer(
+            n_layers=self.n_layers_cross, n_heads=self.n_heads, hidden_size=self.embedding_size,
+            inner_size=self.hidden_size, hidden_dropout_prob=self.hidden_dropout_prob_cross,
+            attn_dropout_prob=self.attn_dropout_prob_cross, hidden_act=self.hidden_act,
+            layer_norm_eps=self.layer_norm_eps,
+        )
+        # 普通Transformer编码器（时序特征提取：处理用户历史序列）
+        self.transformer = Transformer(
+            n_layers=self.n_layers, n_heads=self.n_heads, hidden_size=self.embedding_size,
+            inner_size=self.hidden_size, hidden_dropout_prob=self.hidden_dropout_prob,
+            attn_dropout_prob=self.attn_dropout_prob, hidden_act=self.hidden_act,
+            layer_norm_eps=self.layer_norm_eps,
+        )
+
+        # 6. 正则化与损失函数
+        self.dropout = nn.Dropout(self.hidden_dropout_prob)  # dropout层
+        self.layer_norm = nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)  # 层归一化
+        self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100)  # 交叉熵损失（忽略-100标签）
+
+        # 7. 参数初始化（调用自定义_init_weights方法）
+        self.apply(self._init_weights)
+        
+        关键初始化细节：
+            量化 ID 全局唯一化：与 CCFSeqSplitDataset 逻辑完全一致，确保模型嵌入层能区分不同层级的量化 ID；
+            冻结文本嵌入层：item_text_embedding.requires_grad_(False) 表示文本嵌入是预训练好的（如 T5 嵌入），仅微调量化码嵌入和 Transformer 模块，提升训练效率；
+            Q-Former 设计：专门用于融合 “文本嵌入” 和 “量化码嵌入”，是多模态融合的核心。
+    （3）_init_weights 方法（参数初始化）
+        PyTorch 模型参数初始化的标准实现，确保模型训练稳定：
+         if isinstance(module, (nn.Linear, nn.Embedding)):
+            # 线性层/嵌入层：正态分布初始化（均值0，标准差initializer_range=0.02）
+            module.weight.data.normal_(mean=0.0, std=self.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            # 层归一化：bias设为0，weight设为1（标准初始化）
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            # 线性层bias：设为0
+            module.bias.data.zero_()    
+    （4）forward 方法（核心前向传播）
+        模型的核心数据流向：输入用户历史序列→融合多模态特征→提取时序特征→输出序列表征。
+        # 输入维度：
+        # item_seq: [B, L]（batch_size × max_seq_length，用户历史物品ID序列）
+        # item_seq_len: [B]（每个样本的真实序列长度）
+        # code_seq: [B×L, C]（B×L个物品 × code_level个量化码，全局唯一量化ID）
+        
+        B, L = item_seq.size(0), item_seq.size(1)
+        item_flatten_seq = item_seq.reshape(-1)  # [B×L,]（展平物品序列，便于批量获取文本嵌入）
+        
+        # 1. 量化码嵌入：将量化ID转为向量
+        query_seq_emb = self.query_code_embedding(code_seq)  # [B×L, C, H]（H=embedding_size）
+        
+        # 2. 多文本类型嵌入：每个文本类型（title/brand等）单独获取嵌入，再堆叠
+        text_embs = []
+        for i in range(self.text_num):
+            # 每个文本类型的物品嵌入：[B×L, H]
+            text_emb = self.item_text_embedding[i](item_flatten_seq)
+            text_embs.append(text_emb)
+        encoder_output = torch.stack(text_embs, dim=1)  # [B×L, T, H]（T=text_num，文本类型数）
+        
+        # 3. Q-Former 融合：交叉注意力融合量化码嵌入和文本嵌入
+        # 输出：[B×L, C, H]（融合后的量化码级表征）
+        item_seq_emb = self.qformer(query_seq_emb, encoder_output)[-1]
+        # 聚合量化码维度：对C个量化码的表征取平均，得到物品级表征
+        item_emb = item_seq_emb.mean(dim=1)  # [B×L, H]
+        # 重塑为序列格式：[B, L, H]（batch_size × 序列长度 × 嵌入维度）
+        item_emb = item_emb.view(B, L, -1)
+        
+        # 4. 位置嵌入：添加时序信息（每个位置的向量）
+        item_pos_ids = torch.arange(L, dtype=torch.long, device=item_seq.device)  # [L]
+        item_pos_ids = item_pos_ids.unsqueeze(0).expand_as(item_seq)  # [B, L]（批量位置ID）
+        item_pos_emb = self.position_embedding(item_pos_ids)  # [B, L, H]（位置嵌入向量）
+        
+        # 5. 特征融合与正则化：物品表征 + 位置表征 → 层归一化 → dropout
+        item_emb = item_emb + item_pos_emb  # 时序+物品特征融合
+        item_emb = self.layer_norm(item_emb)  # 层归一化（稳定训练）
+        item_emb = self.dropout(item_emb)  # dropout（防止过拟合）
+        
+        # 6. 生成注意力掩码：避免模型关注padding位置（0为padding）
+        attention_mask = self.get_attention_mask(item_seq)  # [B, L, L]（上三角掩码，防止未来信息泄露）
+        
+        # 7. Transformer 时序特征提取：处理序列表征，捕捉用户行为依赖
+        # 输出：[B, L, H]（每个位置的序列表征）
+        item_seq_output = self.transformer(item_emb, item_emb, attention_mask)[-1]
+        # 提取序列最后一个有效位置的表征（用户最终行为表征）
+        item_seq_output = self.gather_indexes(item_seq_output, item_seq_len - 1)  # [B, H]
+        
+        # 返回：用户序列最终表征 + 整个序列的表征（用于对比学习）
+        return item_seq_output, item_emb
+        核心数据流向图：
+            item_seq (B,L) → 展平 (B×L) → 多文本嵌入 (B×L, T, H)
+                                     ↓
+            code_seq (B×L,C) → 量化码嵌入 (B×L,C,H) → Q-Former融合 (B×L,C,H) → 平均聚合 (B×L,H) → 重塑 (B,L,H)
+                                     ↓
+            位置嵌入 (B,L,H) → 相加融合 (B,L,H) → 层归一化+dropout → Transformer编码 (B,L,H) → 提取最后有效位置 (B,H)
+        关键细节：
+            Q-Former 融合：以量化码嵌入为 Query，文本嵌入为 Key/Value，通过交叉注意力让量化码表征学习文本语义；
+            位置嵌入：必须添加，否则模型无法区分序列中物品的先后顺序；
+            注意力掩码：get_attention_mask 生成上三角掩码（序列推荐常用），防止模型看到未来的物品（如预测第 5 个物品时，不能用第 6 个物品的信息）；
+            gather_indexes：提取每个样本真实序列长度的最后一个位置（如序列真实长度 3，取第 2 个索引），得到用户最终行为表征。
+    （5）get_item_embedding 方法（获取所有物品的表征）
+        用于推荐任务的全排序预测（计算用户表征与所有物品表征的相似度），批量处理避免内存溢出
+        batch_size = 1024  # 批量大小（避免一次性加载所有物品导致OOM）
+        all_items = torch.arange(self.n_items, device=self.device)  # [n_items,]（所有物品ID）
+        n_batches = (self.n_items + batch_size - 1) // batch_size  # 总批次数
+
+        item_embedding = []
+        for i in range(n_batches):
+            # 批量截取物品ID
+            start = i * batch_size
+            end = min((i+1)*batch_size, self.n_items)
+            batch_item = all_items[start:end]  # [batch_size,]
+            
+            # 1. 获取批量物品的量化码
+            batch_query = self.index[batch_item]  # [batch_size, C]（C=code_level）
+            # 2. 量化码嵌入
+            batch_query_emb = self.query_code_embedding(batch_query)  # [batch_size, C, H]
+            # 3. 多文本类型嵌入
+            text_embs = []
+            for i in range(self.text_num):
+                text_emb = self.item_text_embedding[i](batch_item)  # [batch_size, H]
+                text_embs.append(text_emb)
+            batch_encoder_output = torch.stack(text_embs, dim=1)  # [batch_size, T, H]
+            # 4. Q-Former 融合：量化码+文本嵌入
+            batch_item_seq_emb = self.qformer(batch_query_emb, batch_encoder_output)[-1]  # [batch_size, C, H]
+            # 5. 聚合表征：量化码融合后平均 + 原始量化码嵌入平均（增强语义表达）
+            batch_item_emb = batch_item_seq_emb.mean(dim=1) + batch_query_emb.mean(dim=1)  # [batch_size, H]
+            
+            item_embedding.append(batch_item_emb)  # 收集批量物品表征
+
+        # 拼接所有批量表征：[n_items, H]（所有物品的最终表征）
+        item_embedding = torch.cat(item_embedding, dim=0)
+        return item_embedding
+    （6）encode_item 方法（正负样本表征生成）
+        用于推荐任务的负采样（构建正负样本对），支持分布式训练
+        # pos_items: [B]（正样本物品ID，即用户实际交互的下一个物品）
+        # 1. 构建负样本池：所有物品 - 正样本物品（避免采样到正样本）
+        pos_items_list = pos_items.cpu().tolist()
+        all_items = set(range(1, self.n_items)) - set(pos_items_list)  # 排除padding=0和正样本
+        
+        # 2. 分布式/单进程负采样
+        if dist.is_initialized():  # 分布式训练（多GPU）
+            rank = dist.get_rank()  # 当前GPU的rank（0,1,...）
+            world_size = dist.get_world_size()  # GPU总数
+            cand_pool = []
+            for _ in range(world_size):
+                # 每个GPU采样neg_num个负样本
+                cand = np.random.choice(list(all_items), size=self.neg_num, replace=False).tolist()
+                cand_pool.append(cand)
+            candidates = cand_pool[rank]  # 当前GPU使用自己的负样本池
+        else:  # 单进程训练
+            candidates = np.random.choice(list(all_items), size=self.neg_num, replace=False).tolist()
+        
+        # 3. 批量处理正负样本：正样本 + 负样本
+        B = len(pos_items_list)
+        batch_item = torch.tensor(pos_items_list + candidates).to(self.device)  # [B + neg_num,]
+        
+        # 4. 生成正负样本的表征（逻辑与get_item_embedding一致）
+        batch_query = self.index[batch_item]  # [B+neg_num, C]
+        batch_query_emb = self.query_code_embedding(batch_query)  # [B+neg_num, C, H]
+        text_embs = []
+        for i in range(self.text_num):
+            text_emb = self.item_text_embedding[i](batch_item)  # [B+neg_num, H]
+            text_embs.append(text_emb)
+        batch_encoder_output = torch.stack(text_embs, dim=1)  # [B+neg_num, T, H]
+        batch_item_seq_emb = self.qformer(batch_query_emb, batch_encoder_output)[-1]  # [B+neg_num, C, H]
+        batch_item_emb = batch_item_seq_emb.mean(dim=1) + batch_query_emb.mean(dim=1)  # [B+neg_num, H]
+        
+        # 5. 拆分正负样本表征
+        pos_item_emb = batch_item_emb[:B]  # [B, H]（正样本表征）
+        neg_item_emb = batch_item_emb[B:]  # [neg_num, H]（负样本表征）
+        
+        return pos_item_emb, neg_item_emb
+    （7）calculate_loss 方法（多任务损失计算）
+        模型训练的核心：整合「推荐损失（rec_loss）」「MLM 损失（mlm_loss）」「对比损失（cl_loss）」，加权得到总损失。
+        # 输入：
+        # item_seq: [B, L]（用户历史序列）
+        # item_seq_len: [B]（真实序列长度）
+        # pos_items: [B]（正样本目标物品）
+        # code_seq_mask: [B×L, C]（掩码后的量化码序列，用于MLM/对比学习）
+        # labels_mask: [B×L×C]（MLM任务的真实标签，-100为padding）
+        
+        B, L = item_seq.size(0), item_seq.size(1)
+        # 1. 获取原始量化码序列（未掩码）
+        code_seq = self.index[item_seq].reshape(B*L, -1)  # [B×L, C]
+        
+        # 2. 前向传播：获取原始序列表征和掩码序列表征（用于对比学习）
+        item_seq_output, code_output = self.forward(item_seq, item_seq_len, code_seq)  # 原始序列→[B,H]
+        item_seq_output_mask, code_output_mask = self.forward(item_seq, item_seq_len, code_seq_mask)  # 掩码序列→[B,H]
+        
+        # 3. 推荐损失（rec_loss）：预测下一个物品
+        item_seq_output = F.normalize(item_seq_output, dim=-1)  # 归一化（提升相似度计算稳定性）
+        
+        if self.neg_num > 0:  # 负采样模式（高效，适合物品数多的场景）
+            # 生成正负样本表征
+            pos_item_emb, neg_item_emb = self.encode_item(pos_items)
+            pos_item_emb = F.normalize(pos_item_emb, dim=-1)
+            neg_item_emb = F.normalize(neg_item_emb, dim=-1)
+            
+            # 计算相似度（除以tau温度系数，平滑分布）
+            pos_logits = torch.bmm(item_seq_output.unsqueeze(1), pos_item_emb.unsqueeze(2)).squeeze(-1) / self.tau  # [B,1]
+            neg_logits = torch.matmul(item_seq_output, neg_item_emb.transpose(0, 1)) / self.tau  # [B, neg_num]
+            logits_rep = torch.cat([pos_logits, neg_logits], dim=1)  # [B, 1+neg_num]
+            
+            # 标签：正样本在第0位（CrossEntropyLoss默认标签是类别索引）
+            labels = torch.zeros(pos_items.shape[0], device=self.device).long()
+            rec_loss = self.loss_fct(logits_rep, labels)  # 交叉熵损失
+        else:  # 全排序模式（计算与所有物品的相似度，适合物品数少的场景）
+            all_item_emb = self.get_item_embedding()  # [n_items, H]
+            all_item_emb = F.normalize(all_item_emb, dim=-1)
+            logits = torch.matmul(item_seq_output, all_item_emb.transpose(0, 1)) / self.tau  # [B, n_items]
+            rec_loss = self.loss_fct(logits, pos_items)  # 标签是正样本物品ID
+        
+        # 4. 对比损失（cl_loss）：原始序列表征 vs 掩码序列表征（数据增强）
+        cl_loss_func = ContrastiveLoss(tau=self.tau)  # 对比损失函数
+        # 双向对比：原始→掩码，掩码→原始，取平均
+        cl_loss = (cl_loss_func(item_seq_output, item_seq_output_mask, gathered=dist.is_initialized()) + \
+                cl_loss_func(item_seq_output_mask, item_seq_output, gathered=dist.is_initialized())) / 2
+        
+        # 5. MLM损失（mlm_loss）：预测掩码的量化码
+        code_embedding = F.normalize(self.query_code_embedding.weight, dim=-1)  # [n_codes, H]（所有量化码嵌入）
+        # 处理掩码序列的输出：展平为一维（[B×L×C, H]）
+        code_output_mask = code_output_mask.view(-1, self.embedding_size)
+        code_output_mask = F.normalize(code_output_mask, dim=-1)
+        # 计算相似度：掩码位置的表征 vs 所有量化码嵌入
+        mlm_logits = torch.matmul(code_output_mask, code_embedding.transpose(0, 1)) / self.tau  # [B×L×C, n_codes]
+        # MLM损失：忽略-100标签（padding位置）
+        mlm_loss = self.loss_fct(mlm_logits, labels_mask)
+        
+        # 6. 总损失：加权求和（权重由配置参数控制）
+        loss = rec_loss + self.mlm_weight * mlm_loss + self.cl_weight * cl_loss
+        # 返回损失字典（便于日志记录和调参）
+        loss_dict = dict(loss=loss, mlm_loss=mlm_loss, rec_loss=rec_loss, cl_loss=cl_loss)
+        return loss_dict
+        多任务损失逻辑：
+            推荐损失：核心任务，确保模型能学习用户时序行为，预测下一个物品；
+            MLM 损失：辅助任务，让模型学习量化码与文本语义的关联，提升表征质量；
+            对比损失：辅助任务，通过掩码数据增强，让模型对序列的表征更鲁棒（原始序列和掩码序列的表征应相近）；
+            权重控制：mlm_weight 和 cl_weight 控制辅助任务的重要性，避免辅助任务主导训练。
+    （8）full_sort_predict 方法（全排序预测）
+        用于验证 / 测试阶段，计算用户与所有物品的相似度，输出推荐分数
+         # 1. 前向传播获取用户序列表征
+        seq_output, _ = self.forward(item_seq, item_seq_len, code_seq)  # [B, H]
+        seq_output = F.normalize(seq_output, dim=-1)  # 归一化
+        # 2. 获取所有物品的表征
+        item_embedding = F.normalize(self.get_item_embedding(), dim=-1)  # [n_items, H]
+        # 3. 计算相似度（用户表征 × 物品表征^T）：[B, n_items]
+        scores = torch.matmul(seq_output, item_embedding.transpose(0, 1))
+        return scores  # 分数越高，推荐优先级越高
+14、BaseTrainer
+    这是一个 通用的深度学习训练器基类（BaseTrainer），封装了模型训练、验证、测试、 checkpoint 保存、学习率调度等核心流程，专为序列推荐等监督学习任务设计，支持灵活配置优化器、学习率策略、早停机制和多指标评估。以下从 核心定位、逐模块解析、流程梳理、关键亮点 四个维度详细拆解：
+    （1）核心目标
+        提供 “即插即用” 的训练框架，屏蔽训练过程中的重复代码（如优化器初始化、训练循环、评估逻辑）；
+        支持灵活配置：多种优化器（Adam/AdamW/SGD 等）、学习率调度（线性衰减 / 常数）、早停机制、多指标评估；
+        适配序列推荐模型（如之前的 CCFRec），通过调用模型的 calculate_loss（训练）和 full_sort_predict（推理）方法对接任务。
+    （2）__init__ 构造函数（初始化核心组件）
+        self.args = args  # 训练超参数配置（如lr、epochs等）
+        self.model = model  # 待训练模型（如CCFRec）
+        self.logger = getLogger()  # 日志记录器（输出训练日志）
+
+        # 1. 训练超参数加载
+        self.lr = args.lr  # 学习率（如1e-4）
+        self.learner = args.learner  # 优化器类型（如"adamw"）
+        self.lr_scheduler_type = args.lr_scheduler_type  # 学习率调度策略（"linear"/"constant"）
+        self.weight_decay = args.weight_decay  # 权重衰减（正则化，如1e-5）
+        self.epochs = args.epochs  # 总训练轮数
+        self.early_stop = args.early_stop  # 早停阈值（如5，连续5轮无提升则停止）
+        self.eval_step = min(args.eval_step, self.epochs)  # 评估间隔（每几轮验证一次）
+        self.gradient_accumulation_steps = args.gradient_accumulation_steps  # 梯度累积步数（如1）
+
+        # 2. 评估指标解析（如输入metrics="Recall@10,NDCG@10,Hit@5"）
+        self.all_metrics = args.metrics.split(",")  # 拆分所有指标（如["Recall@10", "NDCG@10", "Hit@5"]）
+        self.valid_metric = args.valid_metric  # 用于早停和保存最优模型的指标（如"Recall@10"）
+        self.max_topk = 0  # 所有指标中最大的Top-K（如10）
+        self.all_metric_name = []  # 去重后的指标类型（如["recall", "ndcg", "hit"]）
+        for m in self.all_metrics:
+            m_name, top_k = m.split("@")  # 拆分指标名和Top-K（如"Recall"和"10"）
+            self.max_topk = max(self.max_topk, int(top_k))  # 更新最大Top-K（后续取Top-K时用）
+            if m_name.lower() not in self.all_metric_name:
+                self.all_metric_name.append(m_name.lower())
+
+        # 3. 数据加载（DataLoader）
+        self.train_data = train_data  # 训练集DataLoader
+        self.valid_data = valid_data  # 验证集DataLoader
+        self.test_data = test_data  # 测试集DataLoader
+
+        # 4. 学习率调度器初始化
+        self.max_steps = self.get_train_steps()  # 总训练步数（epochs × 每轮更新步数）
+        self.warmup_steps = args.warmup_steps  # 学习率热身步数（如总步数的10%）
+        self.optimizer = self._build_optimizer()  # 构建优化器（后续详解）
+        # 线性衰减调度器（热身+线性下降）
+        if self.lr_scheduler_type == "linear":
+            self.lr_scheduler = get_linear_schedule_with_warmup(
+                optimizer=self.optimizer,
+                num_warmup_steps=self.warmup_steps,
+                num_training_steps=self.max_steps
+            )
+        # 常数调度器（热身+保持常数）
+        else:
+            self.lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=self.optimizer,
+                num_warmup_steps=self.warmup_steps
+            )
+
+        self.device = device  # 训练设备（CPU/GPU）
+
+        # 5. 模型保存配置
+        self.ckpt_dir = args.ckpt_dir  #  checkpoint保存根目录
+        self.ckpt_dir = os.path.join(self.ckpt_dir, self.args.dataset, args.save_file_name)  # 拼接最终路径（数据集+文件名）
+        ensure_dir(self.ckpt_dir)  # 确保目录存在（不存在则创建）
+        self.best_score = 0  # 最优验证指标分数（初始为0）
+        self.best_ckpt = "best_model.pth"  # 最优模型文件名
+
+        关键初始化细节：
+            评估指标解析：自动处理多指标、多 Top-K 场景（如同时评估 Recall@5 和 Recall@10），并记录最大 Top-K，避免重复计算；
+            学习率调度：结合热身（warmup）和衰减策略，稳定训练初期的梯度波动，避免后期过拟合；
+            ** checkpoint 路径 **：按 “数据集 + 文件名” 组织，便于多实验管理。
+    （3）_build_optimizer 方法（构建优化器）
+        支持多种主流优化器，适配不同任务需求：
+        params = self.model.parameters()  # 模型可训练参数
+        learner = self.learner  # 优化器类型（从args传入）
+        learning_rate = self.lr  # 学习率
+        weight_decay = self.weight_decay  # 权重衰减（L2正则化）
+
+        # 按类型构建优化器
+        if learner.lower() == "adam":
+            optimizer = optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+        elif learner.lower() == "sgd":
+            optimizer = optim.SGD(params, lr=learning_rate, weight_decay=weight_decay)
+        elif learner.lower() == "adagrad":
+            optimizer = optim.Adagrad(params, lr=learning_rate, weight_decay=weight_decay)
+            # Adagrad需要手动将状态张量移到设备（避免CPU/GPU不匹配）
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if torch.is_tensor(v):
+                        state[k] = v.to(self.device)
+        elif learner.lower() == "rmsprop":
+            optimizer = optim.RMSprop(params, lr=learning_rate, weight_decay=weight_decay)
+        elif learner.lower() == 'adamw':
+            optimizer = optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay)  # 推荐序列推荐任务
+        else:
+            # 未识别优化器时，默认使用Adam
+            self.logger.warning("Received unrecognized optimizer, set default Adam optimizer")
+            optimizer = optim.Adam(params, lr=learning_rate)
+        return optimizer
+        优化器选择建议：
+            序列推荐模型（如 CCFRec）常用 AdamW：结合 Adam 的自适应学习率和权重衰减，有效缓解过拟合；
+            如需更快收敛，可尝试 Adam；如需更强正则化，可尝试 SGD + 动量。
+    （4）get_train_steps 方法（计算总训练步数）
+        总步数 = 总轮数 × 每轮更新步数（考虑梯度累积）
+        len_dataloader = len(self.train_data)  # 训练集DataLoader的批次数（每轮训练的批次数）
+        # 每轮更新步数 = 批次数 ÷ 梯度累积步数（梯度累积相当于扩大批次大小）
+        num_update_steps_per_epoch = len_dataloader // self.gradient_accumulation_steps
+        num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)  # 确保至少1步
+        max_steps = math.ceil(self.epochs * num_update_steps_per_epoch)  # 总步数（向上取整）
+        return max_steps
+
+        示例：
+            训练集批次数 = 1000，梯度累积步数 = 2 → 每轮更新步数 = 500；
+            总轮数 = 10 → 总训练步数 = 10×500=5000。
+    （5）_train_epoch 方法（单轮训练逻辑）
+        核心训练循环，负责批量数据处理、损失计算、反向传播和参数更新：
+        self.model.train()  # 模型设为训练模式（启用dropout、batchnorm更新）
+        total_num = 0  # 累计批次数
+        total_loss = 0  # 累计损失值
+        # 进度条显示（tqdm）
+        iter_data = tqdm(
+            self.train_data,
+            total=len(self.train_data),
+            ncols=100,
+            desc=set_color(f"Train {epoch_idx}","pink"),  # 进度条标题（粉色）
+            disable=not verbose,  # 是否禁用进度条
+        )
+
+        for batch_idx, data in enumerate(iter_data):
+            # 从batch中提取数据并移到设备（CPU/GPU）
+            item_inters, inter_lens, labels = data["item_inters"].to(self.device), \
+                                            data["inter_lens"].to(self.device), \
+                                            data["targets"].to(self.device)
+            # item_inters：用户历史物品序列 [B, L]
+            # inter_lens：序列真实长度 [B]
+            # labels：目标物品（下一个交互物品） [B]
+
+            total_num += 1  # 批次数+1
+
+            # 梯度清零（避免梯度累积）
+            self.optimizer.zero_grad()
+            # 调用模型的calculate_loss方法计算损失（多任务损失已在模型中整合）
+            loss = self.model.calculate_loss(item_inters, inter_lens, labels)
+
+            self._check_nan(loss)  # 检查损失是否为NaN（避免训练崩溃）
+            loss.backward()  # 反向传播计算梯度
+            self.optimizer.step()  # 优化器更新参数
+            self.lr_scheduler.step()  # 学习率调度器更新学习率
+
+            total_loss += loss.item()  # 累计损失（转为Python数值，避免显存占用）
+            iter_data.set_postfix(loss=loss.item())  # 进度条显示当前批次损失
+
+        # 返回本轮平均损失
+        return total_loss / total_num
+
+        关键训练细节：
+            训练模式切换：model.train() 启用 dropout 和 batchnorm 更新，与验证 / 测试时的 model.eval() 对应；
+            梯度清零：每批次前调用 optimizer.zero_grad()，避免梯度跨批次累积（除非手动开启梯度累积）；
+            NaN 检查：训练中若损失为 NaN（如学习率过高），直接抛出异常，避免无效训练。
+    （6）evaluate 方法（计算评估指标）
+        根据模型预测分数和真实标签，计算指定的推荐指标（如 Recall、NDCG、Hit）
+         # scores：模型预测分数 [B, n_items]（每个用户对所有物品的推荐分数）
+        # labels：真实标签 [B]（每个用户的目标物品ID）
+
+        metrics = {m:0 for m in self.all_metrics}  # 初始化所有指标为0
+
+        # 步骤1：取Top-K分数对应的物品ID（按分数降序）
+        _, topk_idx = torch.topk(scores, self.max_topk, dim=-1)  # [B, max_topk]（如[32, 10]）
+        topk_idx = topk_idx.detach().cpu()  # 移到CPU并 detach（避免计算图占用显存）
+        labels = labels.detach().cpu()
+
+        # 步骤2：将真实标签转为one-hot编码（便于后续计算）
+        one_hot_labels = torch.zeros_like(scores).detach().cpu()  # [B, n_items]
+        one_hot_labels.scatter_(1, labels.unsqueeze(1), 1)  # 真实标签位置设为1，其余为0
+
+        # 步骤3：提取Top-K位置的真实标签（1=命中，0=未命中）
+        top_k_labels = torch.gather(one_hot_labels, dim=1, index=topk_idx).numpy()  # [B, max_topk]
+        pos_nums = one_hot_labels.sum(dim=1).numpy()  # 每个用户的真实正样本数（序列推荐中通常为1）
+
+        # 步骤4：计算所有指标的Top-K结果（按指标类型批量计算）
+        topk_metrics = {}
+        for m_name in self.all_metric_name:
+            # metrics_to_function：指标名称→计算函数的映射（如"recall"→recall计算函数）
+            value = metrics_to_function[m_name](top_k_labels, pos_nums)  # [B, max_topk]（每个用户的各Top-K指标值）
+            topk_metrics[m_name] = value.sum(axis=0)  # 按用户求和（累计所有用户的指标值）
+
+        # 步骤5：匹配输入的指标格式（如"Recall@10"取Top-10的结果）
+        for m in self.all_metrics:
+            m_name, top_k = m.split("@")
+            m_name = m_name.lower()
+            top_k = int(top_k)
+            value = topk_metrics[m_name]  # [max_topk]（如[Recall@1, Recall@2, ..., Recall@10]）
+            metrics[m] = value[top_k - 1]  # 取对应Top-K的结果（索引从0开始）
+
+        return metrics
+
+        指标计算逻辑：
+            以 Recall@10 为例：对每个用户，若 Top-10 推荐列表中包含真实目标物品，则该用户 Recall@10=1，否则 = 0，最终结果为所有用户的平均值；
+            批量计算优化：先计算所有用户的最大 Top-K 指标，再按需提取对应 Top-K 的结果，避免重复计算（如同时计算 Recall@5 和 Recall@10 时，只需计算一次 Top-10）。
+    （7）_save_checkpoint 方法（保存模型 checkpoint）
+        保存模型参数、优化器状态、超参数等，便于后续恢复训练或测试：
+        # 拼接checkpoint路径（默认保存为最优模型）
+        ckpt_path = os.path.join(self.ckpt_dir, ckpt_file) if ckpt_file else os.path.join(self.ckpt_dir, self.best_ckpt)
+        # 保存的内容：超参数、当前轮数、最优分数、模型参数、优化器状态
+        state = {
+            "args": self.args,
+            "epoch": epoch,
+            "best_score": self.best_score,
+            "state_dict": self.model.state_dict(),  # 模型参数（核心）
+            "optimizer": self.optimizer.state_dict(),  # 优化器状态（支持恢复训练）
+        }
+        torch.save(state, ckpt_path, pickle_protocol=4)  # 保存文件（指定pickle协议，兼容不同PyTorch版本）
+        if verbose:
+            self.log(f"[Epoch {epoch}] Saving current: {ckpt_path}")
+        
+        保存内容说明：
+            state_dict：模型的可训练参数（权重、偏置），是恢复模型的核心；
+            optimizer.state_dict：优化器的状态（如动量、学习率），支持中断后恢复训练；
+            args：训练超参数，便于复现实验。
+    （8）fit 方法（主训练循环）
+        整合训练、验证、早停、模型保存等逻辑，是训练器的入口：
+        cur_eval_step = 0  # 连续未提升的轮数（早停计数）
+        stop = False  # 是否终止训练
+        for epoch_idx in range(self.epochs):
+            # 步骤1：单轮训练
+            training_start_time = time()  # 训练开始时间
+            train_loss = self._train_epoch(epoch_idx, verbose=verbose)  # 训练本轮并返回平均损失
+            training_end_time = time()  # 训练结束时间
+
+            # 步骤2：输出训练日志（轮数、时间、损失）
+            train_loss_output = self._generate_train_loss_output(epoch_idx, training_start_time, training_end_time, train_loss)
+            if verbose:
+                self.log(train_loss_output)
+
+            # 步骤3：按间隔进行验证
+            if (epoch_idx + 1) % self.eval_step == 0:
+                metrics = self._test_epoch(test_data=self.valid_data, verbose=verbose)  # 验证集评估
+                total_metrics = metrics
+
+                # 步骤4：判断是否为最优模型
+                if total_metrics[self.valid_metric] > self.best_score:
+                    self.best_score = total_metrics[self.valid_metric]  # 更新最优分数
+                    self.best_result = total_metrics  # 保存最优指标结果
+                    cur_eval_step = 0  # 早停计数清零（有提升）
+                    self._save_checkpoint(epoch_idx, verbose=verbose)  # 保存最优模型
+                else:
+                    cur_eval_step += 1  # 早停计数+1（无提升）
+
+                # 步骤5：早停判断（连续cur_eval_step轮无提升，终止训练）
+                if cur_eval_step >= self.early_stop:
+                    stop = True
+                if verbose:
+                    self.log(f"[Epoch {epoch_idx}] Val Result: {total_metrics}")
+
+            if stop:
+                break  # 终止训练循环
+
+        return self.best_score, self.best_result  # 返回最优分数和指标
+
+        主循环关键逻辑：
+            评估间隔：每 eval_step 轮验证一次（如每 2 轮验证，避免频繁验证占用时间）；
+            早停机制：连续 early_stop 轮验证指标无提升则停止训练，避免过拟合和无效训练；
+            最优模型保存：仅在验证指标提升时保存模型，确保最终保存的是泛化能力最强的模型。
+    （9）test 与 _test_epoch 方法（验证 / 测试逻辑）
+        _test_epoch 是验证 / 测试的核心实现，test 是对外接口（加载最优模型测试）：
+        @torch.no_grad()  # 禁用梯度计算（节省显存，加速推理）
+        def _test_epoch(self, test_data=None, load_best_model=False, model_file=None, verbose=True):
+            if test_data is None:
+                test_data = self.test_data  # 默认为测试集
+
+            # 加载最优模型（测试时启用）
+            if load_best_model:
+                checkpoint_file = model_file or os.path.join(self.ckpt_dir, self.best_ckpt)  # 最优模型路径
+                checkpoint = torch.load(checkpoint_file, map_location=self.device)  # 加载checkpoint
+                self.model.load_state_dict(checkpoint["state_dict"], strict=False)  # 加载模型参数（strict=False忽略无关参数）
+
+                message_output = "Loading model parameters from {}".format(checkpoint_file)
+                if verbose:
+                    self.log(message_output)
+
+            self.model.eval()  # 模型设为评估模式（禁用dropout、固定batchnorm）
+
+            # 进度条显示
+            iter_data = tqdm(
+                test_data,
+                total=len(test_data),
+                ncols=100,
+                desc=set_color(f"Evaluate   ", "pink"),
+                disable=not verbose,
+            )
+
+            total = 0  # 累计用户数
+            metrics = {m: 0 for m in self.all_metrics}  # 初始化指标
+            for batch_idx, data in enumerate(iter_data):
+                # 提取数据并移到设备
+                item_inters, inter_lens, labels = data["item_inters"].to(self.device), \
+                                                data["inter_lens"].to(self.device), \
+                                                data["targets"].to(self.device)
+
+                total += len(labels)  # 用户数+1（批次大小）
+                # 调用模型的full_sort_predict方法计算推荐分数（所有物品的相似度）
+                scores = self.model.full_sort_predict(item_inters, inter_lens)
+
+                # 计算当前批次的指标
+                _metrics = self.evaluate(scores, labels)
+                for m, v in _metrics.items():
+                    metrics[m] += v  # 累计指标值
+
+            # 计算平均指标（总指标值 ÷ 总用户数）
+            for m in metrics:
+                metrics[m] = metrics[m] / total
+
+            return metrics
+
+        @torch.no_grad()
+        def test(self, verbose=True):
+            test_results = None
+            if self.test_data is not None:
+                # 加载最优模型并测试
+                metrics = self._test_epoch(load_best_model=True, verbose=verbose)
+                test_results = metrics
+            return test_results
+
+        测试 / 验证关键细节：
+            @torch.no_grad()：禁用梯度计算，大幅减少显存占用，提升推理速度；
+            评估模式：model.eval() 禁用 dropout 和 batchnorm 更新，确保结果可重复；
+            加载最优模型：测试时自动加载训练过程中保存的最优模型，避免使用训练后期过拟合的模型。
+    （10）核心亮点总结
+        适配任何实现 calculate_loss（训练）和 full_sort_predict（推理）的模型，不仅限于序列推荐；
+        支持多种优化器、学习率调度、多指标评估，满足不同实验需求；
+15、CCFTrainer
+    这是 CCFRec 模型专属的训练器（CCFTrainer），继承自通用基类BaseTrainer，核心适配 CCFRec 的多任务训练特性（推荐任务 + MLM 任务 + 对比学习任务）和量化编码输入，仅重写了与 CCFRec 强绑定的_train_epoch（训练轮次）和_test_epoch（验证 / 测试轮次）方法，其余逻辑（优化器、学习率调度、早停、模型保存等）完全复用基类。
+    （1）继承逻辑
+        super(CCFTrainer, self).__init__(args, model, train_data, valid_data, test_data, device)
+        构造函数仅调用父类初始化，无额外新增参数，完全复用基类的超参数配置（优化器、学习率、早停等）；
+        核心修改：重写_train_epoch（适配多任务损失记录）和_test_epoch（适配量化编码输入），其余方法（fit、evaluate、_save_checkpoint等）直接复用父类。
+    （2）核心适配点
+        输入数据：新增 CCFRec 必需的code_inters（量化编码序列）和mask_labels（MLM 任务掩码标签）；
+        损失处理：接收 CCFRec 返回的多任务损失字典（loss/rec_loss/mlm_loss/cl_loss），并记录各损失项；
+        推理适配：测试时传入量化编码序列code_inters，匹配 CCFRec 的full_sort_predict方法输入要求。
+    （3）_train_epoch 方法（适配多任务训练）
+        父类BaseTrainer的_train_epoch仅支持单损失值记录，而 CCFTrainer 需记录多任务损失（总损失 + 各分项损失），同时接收量化编码相关输入。
+        self.model.train()  # 训练模式（启用dropout、batchnorm更新）
+        total_num = 0  # 累计批次数
+        total_loss = defaultdict(float)  # 多任务损失字典（默认float类型，自动初始化键）
+        # 进度条（复用父类逻辑，仅描述文字不变）
+        iter_data = tqdm(
+                    self.train_data,
+                    total=len(self.train_data),
+                    ncols=100,
+                    desc=set_color(f"Train {epoch_idx}","pink"),
+                    disable=not verbose,
+                    )
+
+        for batch_idx, data in enumerate(iter_data):
+            # 关键差异1：新增量化编码相关输入（CCFRec必需）
+            item_inters, inter_lens, labels, code_inters, mask_labels = \
+                    data["item_inters"].to(self.device),  # 用户历史物品序列 [B, L]
+                    data["inter_lens"].to(self.device),   # 序列真实长度 [B]
+                    data["targets"].to(self.device),      # 推荐任务目标物品 [B]
+                    data['code_inters'].to(self.device),  # 量化编码序列 [B×L, C]（CCFRec专属）
+                    data["mask_targets"].to(self.device)  # MLM任务掩码标签 [B×L×C]（CCFRec专属）
+
+            total_num += 1  # 批次数+1
+
+            self.optimizer.zero_grad()  # 梯度清零
+
+            # 关键差异2：调用CCFRec的calculate_loss，传入量化编码和MLM标签
+            # 返回值：字典 {"loss": 总损失, "rec_loss": 推荐损失, "mlm_loss": MLM损失, "cl_loss": 对比损失}
+            loss = self.model.calculate_loss(
+                item_inters, inter_lens, labels,  # 父类原有输入
+                code_inters, mask_labels           # CCFRec新增输入
+            )
+
+            # 关键差异3：检查总损失是否为NaN（仅关注总损失，分项损失无需检查）
+            self._check_nan(loss['loss'])
+            loss['loss'].backward()  # 基于总损失反向传播
+            self.optimizer.step()    # 优化器更新参数
+            self.lr_scheduler.step() # 学习率调度器更新
+
+            # 关键差异4：进度条显示总损失，同时累计所有分项损失
+            iter_data.set_postfix(loss=loss['loss'].item())  # 显示总损失
+            for k in loss.keys():
+                total_loss[k] += loss[k].item()  # 累计各分项损失（如rec_loss/mlm_loss）
+
+        # 关键差异5：返回平均后的多任务损失字典（父类仅返回总损失）
+        for k in total_loss.keys():
+            total_loss[k] /= total_num  # 各损失项除以批次数，得到本轮平均
+        return total_loss
+        核心作用：
+            记录各分项损失（如mlm_loss/cl_loss），便于训练过程中监控辅助任务的效果（如 MLM 任务是否收敛）；
+            严格匹配 CCFRec 的calculate_loss方法输入参数，确保多任务训练正常执行。
+
+        与父类_train_epoch的核心差异对比
+        对比维度	    BaseTrainer（通用）	            CCFTrainer（CCFRec 专属）
+        输入数据	    仅物品序列、长度、推荐目标	     新增量化编码序列、MLM 掩码标签
+        损失处理	    接收单损失值，仅记录总损失	     接收多任务损失字典，记录总损失 + 分项损失
+        返回值	        仅本轮平均总损失（float）	    多任务平均损失字典（dict）
+        适配模型	    任何单损失输出的模型	        仅 CCFRec（多任务 + 量化编码输入）
+    （4）_test_epoch 方法（适配量化编码推理）
+        父类BaseTrainer的_test_epoch未考虑量化编码输入，而 CCFRec 的full_sort_predict需要传入code_inters，因此重写该方法以适配推理流程。
+        @torch.no_grad()  # 禁用梯度计算（推理阶段）
+        def _test_epoch(self, test_data=None, load_best_model=False, model_file=None, verbose=True):
+            if test_data is None:
+                test_data = self.test_data  # 默认为测试集
+
+            # 加载最优模型（复用父类逻辑，无修改）
+            if load_best_model:
+                checkpoint_file = model_file or os.path.join(self.ckpt_dir, self.best_ckpt)
+                checkpoint = torch.load(checkpoint_file, map_location=self.device)
+                self.model.load_state_dict(checkpoint["state_dict"], strict=False)
+
+                message_output = "Loading model parameters from {}".format(checkpoint_file)
+                if verbose:
+                    self.log(message_output)
+
+            self.model.eval()  # 评估模式（禁用dropout、固定batchnorm）
+            # 关键差异1：预计算所有物品的表征（CCFRec专属优化）
+            self.model.get_item_embedding()  # 批量计算所有物品的嵌入，缓存供后续推理复用
+
+            # 进度条（复用父类逻辑）
+            iter_data = tqdm(
+                test_data,
+                total=len(test_data),
+                ncols=100,
+                desc=set_color(f"Evaluate   ", "pink"),
+                disable=not verbose,
+            )
+
+            total = 0  # 累计用户数
+            metrics = {m: 0 for m in self.all_metrics}  # 初始化评估指标
+            for batch_idx, data in enumerate(iter_data):
+                # 关键差异2：新增量化编码序列code_inters（CCFRec推理必需）
+                item_inters, inter_lens, code_inters, labels = \
+                    data["item_inters"].to(self.device),  # 用户历史物品序列 [B, L]
+                    data["inter_lens"].to(self.device),   # 序列真实长度 [B]
+                    data['code_inters'].to(self.device),  # 量化编码序列 [B×L, C]（CCFRec专属）
+                    data["targets"].to(self.device)       # 真实目标物品 [B]
+
+                total += len(labels)  # 累计用户数
+
+                # 关键差异3：调用CCFRec的full_sort_predict，传入code_inters
+                scores = self.model.full_sort_predict(
+                    item_inters, inter_lens, code_inters  # 父类无code_inters，此处新增
+                )
+
+                # 评估指标计算（完全复用父类逻辑：Recall/NDCG等）
+                _metrics = self.evaluate(scores, labels)
+                for m, v in _metrics.items():
+                    metrics[m] += v
+
+            # 计算平均指标（复用父类逻辑）
+            for m in metrics:
+                metrics[m] = metrics[m] / total
+
+            return metrics
+            
+            对比维度	    BaseTrainer（通用）	                 CCFTrainer（CCFRec 专属）
+            输入数据	    仅物品序列、长度、推荐目标	          新增量化编码序列 code_inters
+            推理前准备	    无额外操作	                         调用 model.get_item_embedding () 预计算所有物品表征
+            模型推理调用	调用 full_sort_predict (2 个参数)	 调用 full_sort_predict (3 个参数)，传入 code_inters
+            适配模型	    任何单输入序列的推荐模型	          仅 CCFRec（需量化编码辅助推理）
+            
+            核心作用：
+                传入 CCFRec 推理必需的code_inters（量化编码序列），确保full_sort_predict方法正常执行；
+                预计算所有物品表征（model.get_item_embedding()）：避免每次推理都重新计算物品嵌入，提升测试效率（尤其适用于物品数量多的场景）。
+    （5）总结    
+        关键测试细节：
+            @torch.no_grad() 装饰器：禁用梯度计算，测试阶段无需反向传播，可大幅节省内存（尤其是 GPU 内存）和计算时间；
+            预计算物品表征：self.model.get_item_embedding() 一次性计算所有物品的表征并缓存，后续每个用户的推荐分数仅需计算 “用户表征 × 物品表征”，避免重复计算物品表征，提升测试效率；
+            全排序预测：full_sort_predict 返回每个用户对所有物品的分数，evaluate 函数会根据分数排序，取 top-k 物品与真实标签对比，计算 Recall@k（前 k 个推荐中包含真实物品的比例）、NDCG@k（前 k 个推荐的排序相关性）等指标；
+            最优模型加载：load_best_model=True 时，加载训练过程中保存的最优模型（基于验证集指标），确保测试结果是模型的最佳性能。   
+        流程：
+            训练时：DataLoader 通过 Collator 生成批量数据 → CCFTrainer._train_epoch 迭代数据 → 调用 CCFRec.calculate_loss 计算损失 → 反向传播更新参数；
+            测试时：DataLoader 生成批量数据 → CCFTrainer._test_epoch 迭代数据 → 调用 CCFRec.full_sort_predict 生成推荐分数 → 调用 evaluate 计算指标。
+        整个训练流程：
+            数据准备→ load_split_data→ CCFSeqSplitDataset→ Collator→ Dataloader→ CCFTrainer→ CCFRec 模型→ calculate_loss（训练）/full_sort_predict（测试）→ 参数更新（训练）/ 指标评估（测试）
+
+创新点总结：        
+
+    1、generate_faiss_multi_emb.py（可创新！！！！！！！！！） 语义代码的量化方法有很多
+    2、看main代码其实没有用上用户ID，也可以用上，记得处理load_split_data
+    3、物品ID？用户ID？频谱表征(TedRec)
+
+    PS：后续图神经网络（MB-GMN、TGCL4SR、 RepRec）
+
+    小trick：
+    1、_init_weights可以换其他方式
+    2、CCFRec：
+        # 聚合量化编码维度：对C个量化码的表征取平均，得到物品级表征
+        item_emb = item_seq_emb.mean(dim=1)  # [B×L, H] = [640, 64]
+        平均可以换一个方式取
+
+    问题：
+    1、得到的完整序列表表征是加了位置表征后的：item_emb = item_emb + item_pos_emb  # 物品表征 + 位置表征（时序+语义融合）
+        但是get_item_embedding却没有加位置
+
+
+
+    序列最大长度
+        max history length: 285
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.train.jsonl
+        max history length: 286
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.valid.jsonl
+        max history length: 287
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.test.jsonl
+
+        Max single session length found: 53
+    长度统计：
+
+        (CCF) yejinxuan@Encosmart-GPU:~/yejinxuan/Rec/my_CCF$ python preprocess.py --dataset Musical_Instruments --his_len 500
+        max history length: 285
+        max session length: 248
+
+        === Inter History Length Distribution ===
+        Total samples: 396958
+        Length 0-10: 320526 (80.75%)
+        Length 10-20: 47393 (11.94%)
+        Length 20-50: 23716 (5.97%)
+        Length 50-70: 2471 (0.62%)
+        Length 70-100: 1555 (0.39%)
+        Length 100-120: 530 (0.13%)
+        Length 120-150: 419 (0.11%)
+        Length 150-170: 106 (0.03%)
+        Length 170-200: 116 (0.03%)
+        Length 200-inf: 126 (0.03%)
+        ==================================================
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.train.jsonl
+        max history length: 286
+        max session length: 249
+
+        === Inter History Length Distribution ===
+        Total samples: 57439
+        Length 0-10: 47552 (82.79%)
+        Length 10-20: 7466 (13.00%)
+        Length 20-50: 2194 (3.82%)
+        Length 50-70: 150 (0.26%)
+        Length 70-100: 45 (0.08%)
+        Length 100-120: 10 (0.02%)
+        Length 120-150: 16 (0.03%)
+        Length 150-170: 1 (0.00%)
+        Length 170-200: 2 (0.00%)
+        Length 200-inf: 3 (0.01%)
+        ==================================================
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.valid.jsonl
+        max history length: 287
+        max session length: 250
+
+        === Inter History Length Distribution ===
+        Total samples: 57439
+        Length 0-10: 45581 (79.36%)
+        Length 10-20: 9138 (15.91%)
+        Length 20-50: 2477 (4.31%)
+        Length 50-70: 165 (0.29%)
+        Length 70-100: 46 (0.08%)
+        Length 100-120: 10 (0.02%)
+        Length 120-150: 16 (0.03%)
+        Length 150-170: 1 (0.00%)
+        Length 170-200: 2 (0.00%)
+        Length 200-inf: 3 (0.01%)
+        ==================================================
+        Successful write to ./dataset/Musical_Instruments/Musical_Instruments.test.jsonl
+        Total number of users: 57439
+        Total number of items: 24587
+        Total number of actions: 511836
+        Sparsity: 99.964%
+    序列流向：
+        'inter_history': inter_his[-hislen:]存到json
+        data.py中load_split_data中处理得到id_seqs（id被转换了读取）
+        main.py中调用得到train, val, test
+        进入CCFSeqSplitDataset变成inter_seq
+            在里面经过__map_inter__处理变成inter_data
+        出来后train_dataset, valid_dataset, test_dataset封装了inter_data，通过__getitem__得到，变成item_inter
+        后面进入了DataLoader，调用循环时会自动调用collate_fn=Collator
+            Collator函数中zip(*batch)变成item_inters
+        在CCFTrainer的_train_epoch中调用item_inters
+        借用CCFRec的calculate_loss中调用变成item_seq
+        在forward中处理item_seq
+            首先qformer得改一下。qformer不用改，就是在改后面模块的时候得先过一下这个
+            其次后面的自注意力层可以改
+
+    改：
+        1、数据生成写的有问题，需要修改
+        2、transform_token2id_seq中需要再加一个，把id转换了
+        3、load_split_data需要返回两个
+        4、CCFSeqSplitDataset需要接受两个
+        5、__map_inter__append多接受
+        6、注意一下mask，目前还未决定怎么改(code不改其实没必要改)
+        7、Collator多接受俩--代码的+序列的（其实代码的也不需要去改说实话，因为本质上就是分成了二维数组）
+        8、_train_epoch多一个
+        9、calculate_loss现在差不多知道了，其实如果code序列不改，这个都不需要改
+
+        连二维数组都不需要改感觉，只要窗口区间就行分类就行了
+
+
+    padding改正；
+        Collator对同一个 batch 内的不同样本序列进行 padding 操作
+        在Collator内进行padding对齐修改
+
+        在CCFtrauner中的_train_epochfor batch_idx, data in enumerate(iter_data)自动调用Collator
+        _test_epoch中for batch_idx, data in enumerate(iter_data)自动调用Collator
+        如果要在Collator改，就要考虑在model.py中的影响了
+
+        get_item_embedding不需要修改
+        encode_item不需要修改
+
+
+    改2:
+        Collator没必要这么麻烦
+        model.py序列长度需要对应，code_output_sessions词需要改，用得不好
+    
+
+    改3：
+        hislen对应
+        运行看各个维度
+        数据采集判断长度不相等找BUG
+
+        print标记处：
+            data.py中22、89、180、191、203、215、232
+            trainer.py中370
+            model.py中291
+
+        
+    改4：
+        accelerator多卡并行
+        显存调整 
+        会话分割代码调整,序列自注意力有没有加位+位置
+        wandb
+        data.py的self.mode == "train"需要改
+        检查：nan是因为dsin出问题了
+
+    改5：
+        内存调整：内存释放机制需要注意，比如说我qformer后是不是前面就可以释放了。查看各个模块占用的内存
+        代码过一遍：会话分割代码调整,序列自注意力有没有加位置
+        wandb得能看loss
+        分析一下各个输入长度占比多少 + 分析各个模块占比
+
+    改6
+        wandb改
+        多线程bug改
+        对比短序列测试结果（现在结果太差了）
+        或者可以消融实验一下，去掉多层会话看看结果（自己写的代码去掉）
+        把lstm改成transformer
+
+        小样本测试——对比测试+wandb判断
+        大样本消融测试
+        
+        小样本消融测试：
+            1、原始CCFRec
+            INFO:root:[Epoch 0] Val Result: {'recall@5': np.float32(0.008583019), 'ndcg@5': np.float32(0.004418465), 'recall@10': np.float32(0.01385818), 'ndcg@10': np.float32(0.006123542)}
+            2、改动后的CCFRec
+            INFO:root:[Epoch 0] Val Result: {'recall@5': 0.00012178148608654737, 'ndcg@5': 7.314512913580984e-05, 'recall@10': 0.0005045232828706503, 'ndcg@10': 0.0001971562160179019}
+            3、去掉分层
+            INFO:root:[Epoch 0] Val Result: {'recall@5': 0.00017397354531567544, 'ndcg@5': 0.00010138473589904606, 'recall@10': 0.00029575504595413804, 'ndcg@10': 0.0001393400161759928}
+            4、去掉傅里叶+分层
+            INFO:root:[Epoch 0] Val Result: {'recall@5': 5.219206650508568e-05, 'ndcg@5': 2.0190647774143144e-05, 'recall@10': 0.0002087682660203427, 'ndcg@10': 6.765907892258838e-05}
+
+            5、原始Rec上改傅里叶：
+            INFO:root:[Epoch 0] Val Result: {'recall@5': np.float32(0.00022632706), 'ndcg@5': np.float32(0.00016359822), 'recall@10': np.float32(0.00038301502), 'ndcg@10': np.float32(0.00021272912)}
+
+            INFO:root:[Epoch 0] Val Result: {'recall@5': np.float32(0.0082696425), 'ndcg@5': np.float32(0.004241108), 'recall@10': np.float32(0.013684082), 'ndcg@10': np.float32(0.0059680683)}
+
+
+
+        问题：
+            1、loss是一样的，但是效果差很多，为什么
+            2、还要跑俩实验，一个加残差的，一个在5个标签里面的
+            
+            3、ID信息的预测问题

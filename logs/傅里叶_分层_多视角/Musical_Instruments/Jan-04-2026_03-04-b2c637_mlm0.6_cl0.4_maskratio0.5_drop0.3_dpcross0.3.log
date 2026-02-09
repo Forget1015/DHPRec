@@ -1,0 +1,180 @@
+Sun 04 Jan 2026 03:04:58 INFO  {'seed': 2020, 'dataset': 'Musical_Instruments', 'bidirectional': False, 'n_heads': 4, 'lr': 0.001, 'tau': 0.07, 'cl_weight': 0.4, 'mlm_weight': 0.6, 'neg_num': 24000, 'text_types': ['title', 'brand', 'features', 'categories', 'description'], 'epochs': 500, 'batch_size': 100, 'num_workers': 8, 'eval_step': 1, 'learner': 'AdamW', 'data_path': './dataset', 'map_path': '.emb_map.json', 'text_index_path': '.code.pq.20_256.pca128.title_brand_features_categories_description.json', 'text_emb_path': '.t5.meta.emb.npy', 'lr_scheduler_type': 'constant', 'gradient_accumulation_steps': 1, 'warmup_steps': 500, 'weight_decay': 0.0001, 'max_his_len': 40, 'n_codes_per_lel': 256, 'code_level': 20, 'early_stop': 100, 'embedding_size': 128, 'hidden_size': 512, 'n_layers': 2, 'n_layers_cross': 2, 'dropout_prob': 0.3, 'dropout_prob_cross': 0.3, 'mask_ratio': 0.5, 'device': 'cuda:1', 'metrics': 'recall@5,ndcg@5,recall@10,ndcg@10', 'valid_metric': 'ndcg@10', 'log_dir': './logs/傅里叶_分层_多视角', 'ckpt_dir': './myckpt/', 'resume': None, 'run_local_time': 'Jan-04-2026_03-04', 'save_file_name': 'Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3'}
+Sun 04 Jan 2026 03:05:27 INFO  CCFRec(
+  (multiview_cl_loss): MultiViewContrastiveLoss()
+  (freq_view_encoder): FrequencyViewEncoder(
+    (freq_transform): Sequential(
+      (0): Linear(in_features=128, out_features=128, bias=True)
+      (1): GELU(approximate='none')
+      (2): Linear(in_features=128, out_features=128, bias=True)
+    )
+    (layer_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (session_view_encoder): SessionViewEncoder(
+    (attention): MultiheadAttention(
+      (out_proj): NonDynamicallyQuantizableLinear(in_features=128, out_features=128, bias=True)
+    )
+    (layer_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (view_fusion): Sequential(
+    (0): Linear(in_features=384, out_features=128, bias=True)
+    (1): GELU(approximate='none')
+    (2): Linear(in_features=128, out_features=128, bias=True)
+  )
+  (view_gate): Sequential(
+    (0): Linear(in_features=384, out_features=3, bias=True)
+    (1): Softmax(dim=-1)
+  )
+  (query_code_embedding): Embedding(5121, 128, padding_idx=0)
+  (item_text_embedding): ModuleList(
+    (0-4): 5 x Embedding(24588, 128, padding_idx=0)
+  )
+  (qformer): CrossAttTransformer(
+    (layer): ModuleList(
+      (0-1): 2 x CrossAttTransformerLayer(
+        (self_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (cross_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.3, inplace=False)
+        )
+      )
+    )
+  )
+  (fourier_attention): FrequencyAttention(
+    (freq_proj): Linear(in_features=128, out_features=128, bias=True)
+    (dropout): Dropout(p=0.1, inplace=False)
+    (layer_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  )
+  (intra_position_embedding): Embedding(40, 128)
+  (intra_transformer): Transformer(
+    (layer): ModuleList(
+      (0-1): 2 x TransformerLayer(
+        (multi_head_attention): MultiHeadAttention(
+          (query): Linear(in_features=128, out_features=128, bias=True)
+          (key): Linear(in_features=128, out_features=128, bias=True)
+          (value): Linear(in_features=128, out_features=128, bias=True)
+          (softmax): Softmax(dim=-1)
+          (attn_dropout): Dropout(p=0.3, inplace=False)
+          (out_linear): Linear(in_features=128, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (out_dropout): Dropout(p=0.3, inplace=False)
+        )
+        (feed_forward): FeedForward(
+          (linear_1): Linear(in_features=128, out_features=512, bias=True)
+          (linear_2): Linear(in_features=512, out_features=128, bias=True)
+          (LayerNorm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+          (dropout): Dropout(p=0.3, inplace=False)
+        )
+      )
+    )
+  )
+  (intra_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (intra_dropout): Dropout(p=0.3, inplace=False)
+  (inter_lstm): LSTM(128, 64, batch_first=True, bidirectional=True)
+  (inter_layer_norm): LayerNorm((128,), eps=1e-12, elementwise_affine=True)
+  (inter_dropout): Dropout(p=0.3, inplace=False)
+  (session_position_embedding): Embedding(40, 128)
+  (session_attention_w): Linear(in_features=256, out_features=128, bias=True)
+  (session_attention_v): Linear(in_features=128, out_features=1, bias=False)
+  (residual_gate): Sequential(
+    (0): Linear(in_features=256, out_features=128, bias=True)
+    (1): Sigmoid()
+  )
+  (loss_fct): CrossEntropyLoss()
+)
+Sun 04 Jan 2026 03:58:12 INFO  [Epoch 0] training [time: 3165.47s, loss: 12.4846, mlm_loss: 5.7039, rec_loss: 8.9158, cl_loss: 0.1356, multiview_cl_loss: 0.9220, ]
+Sun 04 Jan 2026 04:00:24 INFO  [Epoch 0] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 04:00:24 INFO  [Epoch 0] Val Result: {'recall@5': 0.0352547920402514, 'ndcg@5': 0.02288243421163127, 'recall@10': 0.056042062013614447, 'ndcg@10': 0.02956304139665816}
+Sun 04 Jan 2026 04:52:22 INFO  [Epoch 1] training [time: 3117.97s, loss: 11.4823, mlm_loss: 4.8000, rec_loss: 8.5453, cl_loss: 0.0440, multiview_cl_loss: 0.3939, ]
+Sun 04 Jan 2026 04:54:33 INFO  [Epoch 1] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 04:54:33 INFO  [Epoch 1] Val Result: {'recall@5': 0.038388551332718186, 'ndcg@5': 0.024781868827071316, 'recall@10': 0.061125715976949456, 'ndcg@10': 0.032088250789318734}
+Sun 04 Jan 2026 05:46:54 INFO  [Epoch 2] training [time: 3141.32s, loss: 11.2645, mlm_loss: 4.6372, rec_loss: 8.4320, cl_loss: 0.0383, multiview_cl_loss: 0.3483, ]
+Sun 04 Jan 2026 05:49:00 INFO  [Epoch 2] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 05:49:00 INFO  [Epoch 2] Val Result: {'recall@5': 0.0393634986681523, 'ndcg@5': 0.025491073030530477, 'recall@10': 0.06314524974320583, 'ndcg@10': 0.03313423864945937}
+Sun 04 Jan 2026 06:41:52 INFO  [Epoch 3] training [time: 3172.14s, loss: 11.1438, mlm_loss: 4.5603, rec_loss: 8.3615, cl_loss: 0.0348, multiview_cl_loss: 0.3226, ]
+Sun 04 Jan 2026 06:44:01 INFO  [Epoch 3] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 06:44:01 INFO  [Epoch 3] Val Result: {'recall@5': 0.040843329445150504, 'ndcg@5': 0.026531805520220473, 'recall@10': 0.06544333989101482, 'ndcg@10': 0.03445075954913421}
+Sun 04 Jan 2026 07:36:47 INFO  [Epoch 4] training [time: 3165.37s, loss: 11.0591, mlm_loss: 4.5159, rec_loss: 8.3055, cl_loss: 0.0327, multiview_cl_loss: 0.3100, ]
+Sun 04 Jan 2026 07:38:54 INFO  [Epoch 4] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 07:38:54 INFO  [Epoch 4] Val Result: {'recall@5': 0.041487491077490904, 'ndcg@5': 0.026846481084234194, 'recall@10': 0.06678389247723672, 'ndcg@10': 0.03499297346304871}
+Sun 04 Jan 2026 08:30:53 INFO  [Epoch 5] training [time: 3118.57s, loss: 10.9966, mlm_loss: 4.4874, rec_loss: 8.2612, cl_loss: 0.0314, multiview_cl_loss: 0.3035, ]
+Sun 04 Jan 2026 08:32:59 INFO  [Epoch 5] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 08:32:59 INFO  [Epoch 5] Val Result: {'recall@5': 0.04220129180521945, 'ndcg@5': 0.02699323240230773, 'recall@10': 0.06713208795417748, 'ndcg@10': 0.03500227871482262}
+Sun 04 Jan 2026 09:25:30 INFO  [Epoch 6] training [time: 3151.67s, loss: 10.9461, mlm_loss: 4.4640, rec_loss: 8.2254, cl_loss: 0.0307, multiview_cl_loss: 0.3003, ]
+Sun 04 Jan 2026 09:27:43 INFO  [Epoch 6] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 09:27:43 INFO  [Epoch 6] Val Result: {'recall@5': 0.04235797976984279, 'ndcg@5': 0.026937249329377397, 'recall@10': 0.06754992252650638, 'ndcg@10': 0.03500790086879889}
+Sun 04 Jan 2026 10:20:23 INFO  [Epoch 7] training [time: 3160.01s, loss: 10.9046, mlm_loss: 4.4450, rec_loss: 8.1957, cl_loss: 0.0304, multiview_cl_loss: 0.2975, ]
+Sun 04 Jan 2026 10:22:35 INFO  [Epoch 7] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 10:22:35 INFO  [Epoch 7] Val Result: {'recall@5': 0.042410209091383905, 'ndcg@5': 0.02700342131091865, 'recall@10': 0.06822890370654085, 'ndcg@10': 0.035284312050244473}
+Sun 04 Jan 2026 11:15:10 INFO  [Epoch 8] training [time: 3155.58s, loss: 10.8677, mlm_loss: 4.4300, rec_loss: 8.1677, cl_loss: 0.0307, multiview_cl_loss: 0.2968, ]
+Sun 04 Jan 2026 11:17:22 INFO  [Epoch 8] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 11:17:22 INFO  [Epoch 8] Val Result: {'recall@5': 0.04289768275910096, 'ndcg@5': 0.027989351798607308, 'recall@10': 0.06875119692195199, 'ndcg@10': 0.03629137428765401}
+Sun 04 Jan 2026 12:10:04 INFO  [Epoch 9] training [time: 3161.95s, loss: 10.8361, mlm_loss: 4.4160, rec_loss: 8.1449, cl_loss: 0.0303, multiview_cl_loss: 0.2954, ]
+Sun 04 Jan 2026 12:12:21 INFO  [Epoch 9] Val Result: {'recall@5': 0.04328069778373579, 'ndcg@5': 0.02800123703834869, 'recall@10': 0.06885565556503422, 'ndcg@10': 0.03621566418902942}
+Sun 04 Jan 2026 13:04:55 INFO  [Epoch 10] training [time: 3153.97s, loss: 10.8055, mlm_loss: 4.4029, rec_loss: 8.1219, cl_loss: 0.0305, multiview_cl_loss: 0.2959, ]
+Sun 04 Jan 2026 13:07:10 INFO  [Epoch 10] Saving current: ./myckpt/Musical_Instruments/Jan-04-2026_03-04-b2c637_mlm0.6_cl0.4_maskratio0.5_drop0.3_dpcross0.3/best_model.pth
+Sun 04 Jan 2026 13:07:10 INFO  [Epoch 10] Val Result: {'recall@5': 0.04395967896377026, 'ndcg@5': 0.028578525189206606, 'recall@10': 0.0690819826250457, 'ndcg@10': 0.03663890038779956}
+Sun 04 Jan 2026 13:59:27 INFO  [Epoch 11] training [time: 3137.36s, loss: 10.7784, mlm_loss: 4.3921, rec_loss: 8.1014, cl_loss: 0.0303, multiview_cl_loss: 0.2969, ]
+Sun 04 Jan 2026 14:01:38 INFO  [Epoch 11] Val Result: {'recall@5': 0.04258430682985428, 'ndcg@5': 0.02692091973782308, 'recall@10': 0.06889047511272829, 'ndcg@10': 0.03538388798084056}
+Sun 04 Jan 2026 14:54:14 INFO  [Epoch 12] training [time: 3155.90s, loss: 10.7555, mlm_loss: 4.3835, rec_loss: 8.0835, cl_loss: 0.0304, multiview_cl_loss: 0.2973, ]
+Sun 04 Jan 2026 14:56:24 INFO  [Epoch 12] Val Result: {'recall@5': 0.04308919027141837, 'ndcg@5': 0.027149978138991667, 'recall@10': 0.06955204651891572, 'ndcg@10': 0.0356533899889029}
+Sun 04 Jan 2026 15:49:05 INFO  [Epoch 13] training [time: 3160.90s, loss: 10.7352, mlm_loss: 4.3762, rec_loss: 8.0675, cl_loss: 0.0305, multiview_cl_loss: 0.2986, ]
+Sun 04 Jan 2026 15:51:18 INFO  [Epoch 13] Val Result: {'recall@5': 0.04338515642681801, 'ndcg@5': 0.02764881495764151, 'recall@10': 0.06955204651891572, 'ndcg@10': 0.0360794534017271}
+Sun 04 Jan 2026 16:44:04 INFO  [Epoch 14] training [time: 3166.22s, loss: 10.7150, mlm_loss: 4.3707, rec_loss: 8.0502, cl_loss: 0.0306, multiview_cl_loss: 0.3016, ]
+Sun 04 Jan 2026 16:46:15 INFO  [Epoch 14] Val Result: {'recall@5': 0.04348961506990024, 'ndcg@5': 0.027596454081253666, 'recall@10': 0.06981319312662128, 'ndcg@10': 0.03602235557074608}
+Sun 04 Jan 2026 17:38:29 INFO  [Epoch 15] training [time: 3133.52s, loss: 10.6967, mlm_loss: 4.3644, rec_loss: 8.0354, cl_loss: 0.0305, multiview_cl_loss: 0.3035, ]
+Sun 04 Jan 2026 17:40:41 INFO  [Epoch 15] Val Result: {'recall@5': 0.04359407371298247, 'ndcg@5': 0.02789251232504602, 'recall@10': 0.07043994498511465, 'ndcg@10': 0.03651323929730248}
+Sun 04 Jan 2026 18:32:46 INFO  [Epoch 16] training [time: 3125.36s, loss: 10.6826, mlm_loss: 4.3609, rec_loss: 8.0232, cl_loss: 0.0310, multiview_cl_loss: 0.3042, ]
+Sun 04 Jan 2026 18:34:54 INFO  [Epoch 16] Val Result: {'recall@5': 0.04265394592524243, 'ndcg@5': 0.027239766376538497, 'recall@10': 0.06890788488657533, 'ndcg@10': 0.03566574667026373}
+Sun 04 Jan 2026 19:27:29 INFO  [Epoch 17] training [time: 3154.74s, loss: 10.6631, mlm_loss: 4.3563, rec_loss: 8.0062, cl_loss: 0.0308, multiview_cl_loss: 0.3074, ]
+Sun 04 Jan 2026 19:29:41 INFO  [Epoch 17] Val Result: {'recall@5': 0.04406413760685249, 'ndcg@5': 0.02808970482583626, 'recall@10': 0.07038771566357353, 'ndcg@10': 0.03654678135741402}
+Sun 04 Jan 2026 20:25:32 INFO  [Epoch 18] training [time: 3350.69s, loss: 10.6479, mlm_loss: 4.3527, rec_loss: 7.9928, cl_loss: 0.0311, multiview_cl_loss: 0.3104, ]
+Sun 04 Jan 2026 20:27:44 INFO  [Epoch 18] Val Result: {'recall@5': 0.04263653615139539, 'ndcg@5': 0.02711941209026037, 'recall@10': 0.06916903149428089, 'ndcg@10': 0.035643572735316154}
+Sun 04 Jan 2026 21:21:07 INFO  [Epoch 19] training [time: 3202.96s, loss: 10.6363, mlm_loss: 4.3516, rec_loss: 7.9819, cl_loss: 0.0308, multiview_cl_loss: 0.3117, ]
+Sun 04 Jan 2026 21:23:21 INFO  [Epoch 19] Val Result: {'recall@5': 0.0434722052960532, 'ndcg@5': 0.027817209372457935, 'recall@10': 0.0699176517697035, 'ndcg@10': 0.036298071433330664}
+Sun 04 Jan 2026 22:16:49 INFO  [Epoch 20] training [time: 3208.83s, loss: 10.6237, mlm_loss: 4.3491, rec_loss: 7.9702, cl_loss: 0.0311, multiview_cl_loss: 0.3153, ]
+Sun 04 Jan 2026 22:18:59 INFO  [Epoch 20] Val Result: {'recall@5': 0.04284545343755985, 'ndcg@5': 0.027262539145205125, 'recall@10': 0.06859450895732865, 'ndcg@10': 0.03554245628423413}
+Sun 04 Jan 2026 23:12:28 INFO  [Epoch 21] training [time: 3208.63s, loss: 10.6115, mlm_loss: 4.3476, rec_loss: 7.9587, cl_loss: 0.0311, multiview_cl_loss: 0.3185, ]
+Sun 04 Jan 2026 23:14:39 INFO  [Epoch 21] Val Result: {'recall@5': 0.042601716603701316, 'ndcg@5': 0.027084752032388172, 'recall@10': 0.06934312923275127, 'ndcg@10': 0.035679196763078895}
+Mon 05 Jan 2026 00:08:11 INFO  [Epoch 22] training [time: 3212.37s, loss: 10.6013, mlm_loss: 4.3463, rec_loss: 7.9492, cl_loss: 0.0311, multiview_cl_loss: 0.3191, ]
+Mon 05 Jan 2026 00:10:21 INFO  [Epoch 22] Val Result: {'recall@5': 0.04162676926826721, 'ndcg@5': 0.026612985689607377, 'recall@10': 0.06861191873117568, 'ndcg@10': 0.035276181941000115}
+Mon 05 Jan 2026 01:03:54 INFO  [Epoch 23] training [time: 3212.65s, loss: 10.5886, mlm_loss: 4.3447, rec_loss: 7.9372, cl_loss: 0.0310, multiview_cl_loss: 0.3210, ]
+Mon 05 Jan 2026 01:06:04 INFO  [Epoch 23] Val Result: {'recall@5': 0.043071780497571335, 'ndcg@5': 0.02721283968121862, 'recall@10': 0.0689427044342694, 'ndcg@10': 0.0355340511239246}
+Mon 05 Jan 2026 01:59:26 INFO  [Epoch 24] training [time: 3201.98s, loss: 10.5798, mlm_loss: 4.3442, rec_loss: 7.9281, cl_loss: 0.0313, multiview_cl_loss: 0.3266, ]
+Mon 05 Jan 2026 02:01:37 INFO  [Epoch 24] Val Result: {'recall@5': 0.04230575044830168, 'ndcg@5': 0.02698850723861928, 'recall@10': 0.06793293755114121, 'ndcg@10': 0.03521312250718094}
+Mon 05 Jan 2026 02:55:06 INFO  [Epoch 25] training [time: 3209.30s, loss: 10.5686, mlm_loss: 4.3422, rec_loss: 7.9181, cl_loss: 0.0310, multiview_cl_loss: 0.3272, ]
+Mon 05 Jan 2026 02:57:15 INFO  [Epoch 25] Val Result: {'recall@5': 0.04272358502063058, 'ndcg@5': 0.027228535716979748, 'recall@10': 0.07045735475896168, 'ndcg@10': 0.03614838086607587}
+Mon 05 Jan 2026 03:50:46 INFO  [Epoch 26] training [time: 3211.22s, loss: 10.5587, mlm_loss: 4.3424, rec_loss: 7.9075, cl_loss: 0.0313, multiview_cl_loss: 0.3322, ]
+Mon 05 Jan 2026 03:52:56 INFO  [Epoch 26] Val Result: {'recall@5': 0.04173122791134943, 'ndcg@5': 0.02685439349887377, 'recall@10': 0.06701021953724821, 'ndcg@10': 0.03500800278112955}
+Mon 05 Jan 2026 04:46:26 INFO  [Epoch 27] training [time: 3209.73s, loss: 10.5500, mlm_loss: 4.3418, rec_loss: 7.8992, cl_loss: 0.0313, multiview_cl_loss: 0.3321, ]
+Mon 05 Jan 2026 04:48:37 INFO  [Epoch 27] Val Result: {'recall@5': 0.042514667734466126, 'ndcg@5': 0.027006750603228068, 'recall@10': 0.06793293755114121, 'ndcg@10': 0.03515951287202881}
+Mon 05 Jan 2026 05:42:09 INFO  [Epoch 28] training [time: 3211.65s, loss: 10.5421, mlm_loss: 4.3421, rec_loss: 7.8908, cl_loss: 0.0311, multiview_cl_loss: 0.3354, ]
+Mon 05 Jan 2026 05:44:19 INFO  [Epoch 28] Val Result: {'recall@5': 0.04113929560055015, 'ndcg@5': 0.025828216641092742, 'recall@10': 0.06786329845575306, 'ndcg@10': 0.03438952881900249}
+Mon 05 Jan 2026 06:38:03 INFO  [Epoch 29] training [time: 3224.11s, loss: 10.5341, mlm_loss: 4.3415, rec_loss: 7.8831, cl_loss: 0.0310, multiview_cl_loss: 0.3366, ]
+Mon 05 Jan 2026 06:40:15 INFO  [Epoch 29] Val Result: {'recall@5': 0.04188791587597277, 'ndcg@5': 0.026708508513698062, 'recall@10': 0.06789811800344714, 'ndcg@10': 0.03508172019195145}
+Mon 05 Jan 2026 07:33:52 INFO  [Epoch 30] training [time: 3216.67s, loss: 10.5258, mlm_loss: 4.3403, rec_loss: 7.8752, cl_loss: 0.0309, multiview_cl_loss: 0.3402, ]
+Mon 05 Jan 2026 07:36:02 INFO  [Epoch 30] Val Result: {'recall@5': 0.041470081303643866, 'ndcg@5': 0.02629561903850745, 'recall@10': 0.06775883981267083, 'ndcg@10': 0.03474408228487152}
+Mon 05 Jan 2026 08:29:40 INFO  [Epoch 31] training [time: 3218.07s, loss: 10.5201, mlm_loss: 4.3417, rec_loss: 7.8683, cl_loss: 0.0311, multiview_cl_loss: 0.3435, ]
+Mon 05 Jan 2026 08:31:50 INFO  [Epoch 31] Val Result: {'recall@5': 0.041661588815961284, 'ndcg@5': 0.026306170000273108, 'recall@10': 0.06711467818033044, 'ndcg@10': 0.034465615996726866}
+Mon 05 Jan 2026 09:25:24 INFO  [Epoch 32] training [time: 3213.91s, loss: 10.5112, mlm_loss: 4.3421, rec_loss: 7.8590, cl_loss: 0.0313, multiview_cl_loss: 0.3440, ]
+Mon 05 Jan 2026 09:27:33 INFO  [Epoch 32] Val Result: {'recall@5': 0.04153972039903202, 'ndcg@5': 0.02665212155311984, 'recall@10': 0.06654015564337819, 'ndcg@10': 0.03469005324477391}
