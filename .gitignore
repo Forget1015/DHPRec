@@ -1,6 +1,7 @@
 # 忽略这些文件夹
 dataset/
 log/
+logs/
 myckpt/
 wandb/
 # 可选：忽略 Python 缓存（推荐）
