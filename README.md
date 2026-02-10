@@ -92,7 +92,6 @@ python main.py \
     --hidden_size=512\
     --early_stop=100\
     --log_dir="./logs/Video_Games/傅里叶_分层"\
-    --resume="/home/yejinxuan/yejinxuan/DHPRec/myckpt/Video_Games/Jan-11-2026_02-18-e18370_mlm0.3_cl0.5_maskratio0.5_drop0.2_dpcross0.1/best_model.pth"\
     --device=cuda:1
 
 
