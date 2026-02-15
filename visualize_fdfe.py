@@ -13,7 +13,7 @@ from model import DHPRec
 from utils import load_json
 
 # ==========================================
-# 1. 设置论文级别的绘图风格
+# 1. 设置绘图风格
 # ==========================================
 sns.set_style("whitegrid")
 

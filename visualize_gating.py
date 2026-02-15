@@ -16,7 +16,7 @@ from model import DHPRec
 from utils import load_json
 
 # ==========================================
-# 1. 设置高级论文绘图风格
+# 1. 设置高级绘图风格
 # ==========================================
 sns.set_style("white")
 plt.rcParams['font.family'] = 'serif'
@@ -29,9 +29,9 @@ plt.rcParams['xtick.labelsize'] = 14
 plt.rcParams['ytick.labelsize'] = 14
 plt.rcParams['axes.linewidth'] = 1.5
 
-# === 高级配色方案 (参考蓝色系) ===
+# === 高级配色方案 (蓝色系) ===
 # Heatmap: 使用蓝色系渐变
-CMAP_HEATMAP = "Blues"  # 蓝色渐变，与参考图一致
+CMAP_HEATMAP = "Blues"  # 蓝色渐变
 
 # Bar Chart: 使用蓝色系配色
 COLOR_SHORT = '#4169E1'  # 皇家蓝 (Short-term)

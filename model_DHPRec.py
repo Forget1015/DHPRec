@@ -186,19 +186,19 @@ class DHPRec(SeqBaseModel):
             layer_norm_eps=self.layer_norm_eps,
         )
 
-        #------------------------------------------------------
+        # ==================== 频域特征精炼模块 (FDFR) ====================
         self.fourier_attention = FrequencyAttention(self.embedding_size)
-        # self.multiScale_frequency_fusion = MultiScaleFrequencyFusion(self.embedding_size)
-        #------------------------------------------------------
-        # Hierarchical Transformer 组件（改进版）
         
-        # BiasEncoding（参考DSIN）：session偏置 + 位置偏置 + 维度偏置
-        # 在intra-session transformer之前对输入做bias encoding
-        self.session_bias = nn.Parameter(torch.zeros(self.max_seq_length, 1, 1))  # [max_sess, 1, 1]
-        self.position_bias = nn.Parameter(torch.zeros(1, self.max_seq_length, 1))  # [1, max_len, 1]
-        self.dim_bias = nn.Parameter(torch.zeros(1, 1, self.embedding_size))  # [1, 1, H]
+        # ==================== 基于模式的锚点引导融合组件 ====================
+        # 复合位置编码 (Compound Position Encoding)
+        # BE(k,t,c) = x + w_k + w_t + w_c
+        # 用于捕获用户行为在不同时间粒度上的位置信息
+        self.session_bias = nn.Parameter(torch.zeros(self.max_seq_length, 1, 1))    # 片段级位置偏置 w_k
+        self.position_bias = nn.Parameter(torch.zeros(1, self.max_seq_length, 1))   # 片段内位置偏置 w_t
+        self.dim_bias = nn.Parameter(torch.zeros(1, 1, self.embedding_size))        # 维度偏置 w_c
         
-        # Intra-session transformer (组内)
+        # 片段内Transformer编码器 (Intra-Slice Pattern Extraction)
+        # 提取每个时间片段内的用户兴趣模式
         self.intra_position_embedding = nn.Embedding(self.max_seq_length, self.embedding_size)
         self.intra_transformer = Transformer(
             n_layers=self.n_layers,
@@ -213,7 +213,8 @@ class DHPRec(SeqBaseModel):
         self.intra_layer_norm = nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
         self.intra_dropout = nn.Dropout(self.hidden_dropout_prob)
         
-        # Inter-session: 使用BiLSTM（参考DSIN）
+        # 片段间BiLSTM (Global Historical Pattern Modeling)
+        # 建模片段序列的时序演化关系，构建全局历史模式空间
         self.inter_lstm = nn.LSTM(
             input_size=self.embedding_size,
             hidden_size=self.embedding_size // 2,
@@ -225,18 +226,16 @@ class DHPRec(SeqBaseModel):
         self.inter_layer_norm = nn.LayerNorm(self.embedding_size, eps=self.layer_norm_eps)
         self.inter_dropout = nn.Dropout(self.hidden_dropout_prob)
         
-        # Session-level position embedding
+        # 片段位置编码
         self.session_position_embedding = nn.Embedding(self.max_seq_length, self.embedding_size)
         
-        # Session-level position embedding（session的位置）
-        self.session_position_embedding = nn.Embedding(self.max_seq_length, self.embedding_size)
-        
-        # 改进1：Session Interest Activation（参考DSIN）
-        # 用最后一个item作为query，对所有session做attention
+        # 锚点引导的模式提取 (Anchor-Guided Pattern Extract)
+        # 使用最近片段作为锚点(Anchor)，计算与历史模式的相关性
         self.session_attention_w = nn.Linear(self.embedding_size * 2, self.embedding_size)
         self.session_attention_v = nn.Linear(self.embedding_size, 1, bias=False)
         
-        # 改进2：残差连接 - 保留最后一个session的信息
+        # 意图与规律融合的门控网络 (Bridging Intent and Regularity)
+        # 动态平衡即时意图(r*)和全局历史规律(c)的贡献
         self.residual_gate = nn.Sequential(
             nn.Linear(self.embedding_size * 2, self.embedding_size),
             nn.Sigmoid()
@@ -313,37 +312,38 @@ class DHPRec(SeqBaseModel):
     
     def _hierarchical_transformer(self, item_emb, session_ids, item_seq_len):
         """
-        改进版层级Transformer:
-        1. BiasEncoding: session偏置 + 位置偏置 + 维度偏置（参考DSIN）
-        2. Intra-session: Transformer提取session内兴趣
-        3. Inter-session: BiLSTM建模session间时序关系
-        4. Session Attention: 用target对session做attention激活
-        5. Residual: 残差连接保留最后session信息
+        基于模式的锚点引导融合 (Pattern-Based Anchor-Guided Fusion)
+        
+        该方法实现DHPRec的核心机制，包含以下步骤：
+        1. 时间片段划分: 将长序列划分为短而密集的模式单元(Pattern Units)
+        2. 复合位置编码: 注入片段级和片段内的位置信息
+        3. 片段内模式提取: 使用Transformer提取每个片段内的用户兴趣
+        4. 全局历史模式建模: 使用BiLSTM建模片段间的时序演化
+        5. 锚点引导的模式提取: 以最近片段为锚点，提取与当前意图相关的历史规律
+        6. 意图与规律融合: 通过门控机制动态平衡即时意图和历史偏好
         """
         B, L, H = item_emb.shape
         device = item_emb.device
         
-        # 1. 按session分组
+        # Step 1: 时间片段划分
         item_emb_sessions, user_sess_count, sess_item_lens = self._split_to_sessions(item_emb, session_ids)
         _, max_sess_count, max_sess_len, _ = item_emb_sessions.shape
-        # item_emb_sessions: [B, max_sess_count, max_sess_len, H]
         
-        # 2. BiasEncoding（参考DSIN）
-        # 截取需要的偏置大小
-        sess_bias = self.session_bias[:max_sess_count, :, :]  # [max_sess, 1, 1]
-        pos_bias = self.position_bias[:, :max_sess_len, :]    # [1, max_len, 1]
-        dim_bias = self.dim_bias                               # [1, 1, H]
+        # Step 2: 复合位置编码 (Compound Position Encoding)
+        # BE(k,t,c) = x + w_k + w_t + w_c
+        sess_bias = self.session_bias[:max_sess_count, :, :]    # 片段级位置偏置 w_k
+        pos_bias = self.position_bias[:, :max_sess_len, :]      # 片段内位置偏置 w_t
+        dim_bias = self.dim_bias                                 # 维度偏置 w_c
         
-        # 应用BiasEncoding: BE(k,t,c) = x + w_k + w_t + w_c
-        # item_emb_sessions: [B, max_sess, max_len, H]
+        # 应用复合位置编码
         item_emb_sessions = item_emb_sessions + sess_bias.unsqueeze(0) + pos_bias.unsqueeze(0) + dim_bias.unsqueeze(0)
         
-        # 3. Intra-session transformer (组内)
+        # Step 3: 片段内模式提取 (Intra-Slice Pattern Extraction)
         intra_input = item_emb_sessions.view(B * max_sess_count, max_sess_len, H)
         flat_sess_lens = sess_item_lens.view(-1)
         intra_mask = self._get_intra_session_mask(flat_sess_lens, max_sess_len, device)
         
-        # 添加位置编码（这里保留原来的position embedding，与BiasEncoding互补）
+        # 添加片段内位置编码
         intra_pos_ids = torch.arange(max_sess_len, dtype=torch.long, device=device)
         intra_pos_ids = intra_pos_ids.unsqueeze(0).expand(B * max_sess_count, -1)
         intra_pos_emb = self.intra_position_embedding(intra_pos_ids)
@@ -353,21 +353,22 @@ class DHPRec(SeqBaseModel):
         
         intra_output = self.intra_transformer(intra_input, intra_input, intra_mask)[-1]
         
-        # 4. 聚合session表示：取最后一个有效item的表示
+        # 聚合片段表示：取最后一个有效物品的表示作为片段表示
         gather_idx = (flat_sess_lens - 1).clamp(min=0).view(-1, 1, 1).expand(-1, -1, H)
-        session_repr = intra_output.gather(dim=1, index=gather_idx).squeeze(1)  # [B*max_sess, H]
+        session_repr = intra_output.gather(dim=1, index=gather_idx).squeeze(1)
         
         valid_sess_mask = (flat_sess_lens > 0).float().unsqueeze(1)
         session_repr = session_repr * valid_sess_mask
         session_repr = session_repr.view(B, max_sess_count, H)
         
-        # 5. 添加session位置编码
+        # 添加片段级位置编码
         sess_pos_ids = torch.arange(max_sess_count, dtype=torch.long, device=device)
         sess_pos_ids = sess_pos_ids.unsqueeze(0).expand(B, -1)
         sess_pos_emb = self.session_position_embedding(sess_pos_ids)
         session_repr = session_repr + sess_pos_emb
         
-        # 6. Inter-session: BiLSTM
+        # Step 4: 全局历史模式建模 (Global Historical Pattern Modeling)
+        # 使用BiLSTM建模片段序列的时序演化
         packed_input = nn.utils.rnn.pack_padded_sequence(
             session_repr, 
             user_sess_count.cpu().clamp(min=1), 
@@ -379,33 +380,37 @@ class DHPRec(SeqBaseModel):
         inter_output = self.inter_layer_norm(inter_output)
         inter_output = self.inter_dropout(inter_output)
         
-        # 7. Session Attention Activation（参考DSIN）
+        # Step 5: 锚点引导的模式提取 (Anchor-Guided Pattern Extract)
+        # 将最近片段作为锚点(Anchor)，代表用户的即时意图(Immediate Intent)
         last_sess_idx = (user_sess_count - 1).clamp(min=0).view(-1, 1, 1).expand(-1, -1, H)
-        last_session_repr = inter_output.gather(dim=1, index=last_sess_idx).squeeze(1)  # [B, H]
+        last_session_repr = inter_output.gather(dim=1, index=last_sess_idx).squeeze(1)  # 锚点 r*
         
-        # Attention: 计算每个session与最后session的相关性
+        # 计算每个历史模式与锚点的相关性分数
+        # s_n = W_3 * tanh(W_1 * r_n + W_2 * r* + b)
         query_expanded = last_session_repr.unsqueeze(1).expand(-1, max_sess_count, -1)
         attention_input = torch.cat([inter_output, query_expanded], dim=-1)
         attention_hidden = torch.tanh(self.session_attention_w(attention_input))
         attention_scores = self.session_attention_v(attention_hidden).squeeze(-1)
         
-        # Mask无效session
+        # 掩码无效片段并计算注意力权重
         sess_mask = torch.arange(max_sess_count, device=device).unsqueeze(0) < user_sess_count.unsqueeze(1)
         attention_scores = attention_scores.masked_fill(~sess_mask, -1e9)
-        attention_weights = F.softmax(attention_scores, dim=-1)
+        attention_weights = F.softmax(attention_scores, dim=-1)  # α_n
         
-        # 加权聚合所有session
+        # 加权聚合历史模式，得到全局历史规律 c
         attended_output = torch.bmm(attention_weights.unsqueeze(1), inter_output).squeeze(1)
         
-        # 8. 残差连接
+        # Step 6: 意图与规律的动态融合 (Bridging Intent and Regularity)
+        # e_u = λ * r* + (1-λ) * c
+        # λ = σ(W_g1 * r* + W_g2 * c + b_g)
         gate_input = torch.cat([attended_output, last_session_repr], dim=-1)
-        gate = self.residual_gate(gate_input)
+        gate = self.residual_gate(gate_input)  # λ
         final_output = gate * last_session_repr + (1 - gate) * attended_output
         
         return final_output
     
     def _get_intra_session_mask(self, sess_lens, max_len, device):
-        """生成intra-session的attention mask"""
+        """生成片段内的因果注意力掩码"""
         B = sess_lens.size(0)
         positions = torch.arange(max_len, device=device).unsqueeze(0).expand(B, -1)
         valid_mask = positions < sess_lens.unsqueeze(1)
