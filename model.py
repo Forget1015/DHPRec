@@ -103,6 +103,8 @@ class FrequencyAttention(nn.Module):
         self.freq_proj = nn.Linear(hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(hidden_size)
+        # 保存最近一次的频率权重，用于计算正则化损失
+        self.last_freq_weight = None
         
     def forward(self, x):
         B, L, H = x.shape
@@ -117,6 +119,9 @@ class FrequencyAttention(nn.Module):
         # 低频分量（稳定偏好）获得较高权重，高频分量（噪声）被抑制
         freq_weight = torch.softmax(self.freq_proj(freq_magnitude), dim=1)
         
+        # 保存频率权重用于正则化损失计算
+        self.last_freq_weight = freq_weight
+        
         # 频域加权调制
         weighted_fft = x_fft * freq_weight
         
@@ -125,6 +130,68 @@ class FrequencyAttention(nn.Module):
         
         # 残差连接，融合系数控制增强强度
         return self.layer_norm(x + self.dropout(enhanced * 0.1))
+
+
+class FrequencyWeightedRegularization(nn.Module):
+    """
+    频率加权正则化模块 (Frequency-Weighted Regularization)
+    
+    论文公式(6): L_freq = Σ_{k=0}^{L'} ω_k · (1/d) · ||g_k||_1
+    
+    其中:
+    - ω_k 是频率依赖的惩罚系数，ω_k = k^2 (高频惩罚更大)
+    - g_k 是第k个频率分量的权重
+    - d 是嵌入维度
+    
+    该损失引导模型关注低频稳定规律，抑制高频噪声
+    """
+    def __init__(self, penalty_type='quadratic'):
+        """
+        Args:
+            penalty_type: 惩罚系数类型
+                - 'linear': ω_k = k
+                - 'quadratic': ω_k = k^2 (论文默认)
+        """
+        super().__init__()
+        self.penalty_type = penalty_type
+    
+    def forward(self, freq_weight):
+        """
+        计算频率加权正则化损失
+        
+        Args:
+            freq_weight: 频率权重 [B, L', H]，来自FrequencyAttention.last_freq_weight
+            
+        Returns:
+            freq_loss: 标量损失值
+        """
+        if freq_weight is None:
+            return torch.tensor(0.0)
+        
+        B, L_prime, H = freq_weight.shape
+        device = freq_weight.device
+        
+        # 生成频率索引 k = 0, 1, 2, ..., L'-1
+        k = torch.arange(L_prime, device=device, dtype=freq_weight.dtype)
+        
+        # 计算惩罚系数 ω_k
+        if self.penalty_type == 'linear':
+            omega_k = k  # ω_k = k
+        else:  # quadratic (default)
+            omega_k = k ** 2  # ω_k = k^2
+        
+        # 计算 ||g_k||_1 / d，对每个频率分量求L1范数并除以维度
+        # freq_weight: [B, L', H] -> l1_norm: [B, L']
+        l1_norm = freq_weight.abs().mean(dim=-1)  # 1/d * ||g_k||_1
+        
+        # 加权求和: Σ_k ω_k · (1/d) · ||g_k||_1
+        # omega_k: [L'] -> broadcast to [B, L']
+        weighted_loss = (omega_k.unsqueeze(0) * l1_norm).sum(dim=-1)  # [B]
+        
+        # 对batch取平均
+        freq_loss = weighted_loss.mean()
+        
+        return freq_loss
 
 
 class MultiScaleFrequencyFusion(nn.Module):
@@ -241,6 +308,12 @@ class DHPRec(SeqBaseModel):
         # ==================== 频域特征精炼模块 (FDFR) ====================
         self.fourier_attention = FrequencyAttention(self.embedding_size)
         # self.multiScale_frequency_fusion = MultiScaleFrequencyFusion(self.embedding_size)
+        
+        # 频率加权正则化 (Frequency-Weighted Regularization)
+        # 设置为None可禁用，或实例化启用
+        self.freq_regularization = FrequencyWeightedRegularization(penalty_type='quadratic')
+        # self.freq_regularization = None  # 注释上一行，取消注释本行可禁用
+        self.freq_weight = getattr(args, 'freq_weight', 0.01)  # 正则化损失权重，默认0.01
         
         # ==================== 基于模式的锚点引导融合组件 ====================
         # 复合位置编码：片段级位置 + 片段内位置 + 维度偏置
@@ -655,7 +728,15 @@ class DHPRec(SeqBaseModel):
 
         # 总损失
         loss = rec_loss + self.mlm_weight * mlm_loss + self.cl_weight * cl_loss
-        loss_dict = dict(loss=loss, mlm_loss=mlm_loss, rec_loss=rec_loss, cl_loss=cl_loss)
+        
+        # 频率加权正则化损失 (Frequency-Weighted Regularization Loss)
+        # L_freq = Σ_k ω_k · (1/d) · ||g_k||_1，其中 ω_k = k^2
+        freq_loss = torch.tensor(0.0, device=self.device)
+        if self.freq_regularization is not None and self.fourier_attention.last_freq_weight is not None:
+            freq_loss = self.freq_regularization(self.fourier_attention.last_freq_weight)
+            loss = loss + self.freq_weight * freq_loss
+        
+        loss_dict = dict(loss=loss, mlm_loss=mlm_loss, rec_loss=rec_loss, cl_loss=cl_loss, freq_loss=freq_loss)
         
         return loss_dict
 
